@@ -1302,38 +1302,45 @@ export function ProjectorModePage() {
   const [refreshing, setRefreshing] = useState(false)
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null)
 
-  const reloadEntries = useCallback(() => {
-    if (!supabase || !eventId) return
-    void syncAllRemoteCheckIns(eventId).then(() => {
-      if (!supabase) return
-      supabase
-        .from('entries')
-        .select('*')
-        .eq('event_id', eventId)
-        .order('created_at', { ascending: true })
-        .then(({ data }: { data: any }) => {
-          if (data) setEntries(data as EntryRow[])
-        })
-      supabase
-        .from('draws')
-        .select('*')
-        .eq('event_id', eventId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-        .then(({ data }: { data: any }) => {
-          if (data) setDraw(data as DrawRow)
-        })
-    })
+  // Read entries directly from localStorage — instant, no async needed
+  const readLocalEntries = useCallback(() => {
+    if (!eventId) return
+    try {
+      const raw = localStorage.getItem('raffle_mock_entries_v1')
+      const all: EntryRow[] = raw ? JSON.parse(raw) : []
+      const filtered = all
+        .filter((e) => e.event_id === eventId)
+        .sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
+      setEntries(filtered)
+    } catch {
+      // ignore parse errors
+    }
+    // Also update draws
+    try {
+      const dRaw = localStorage.getItem('raffle_mock_draws_v1')
+      const draws: DrawRow[] = dRaw ? JSON.parse(dRaw) : []
+      const latest = draws
+        .filter((d) => d.event_id === eventId)
+        .sort((a, b) => (a.created_at > b.created_at ? -1 : 1))[0]
+      if (latest) setDraw(latest)
+    } catch {
+      // ignore
+    }
   }, [eventId])
+
+  // Trigger a background ntfy.sh fetch then re-read localStorage
+  const syncAndReload = useCallback(async () => {
+    if (!eventId) return
+    await syncAllRemoteCheckIns(eventId)
+    readLocalEntries()
+  }, [eventId, readLocalEntries])
 
   const handleManualRefresh = async () => {
     if (!eventId || refreshing) return
     setRefreshing(true)
     setRefreshNotice(null)
     try {
-      await syncAllRemoteCheckIns(eventId)
-      reloadEntries()
+      await syncAndReload()
       setRefreshNotice('Refreshed!')
       setTimeout(() => setRefreshNotice(null), 3000)
     } finally {
@@ -1343,71 +1350,65 @@ export function ProjectorModePage() {
 
   // Load event details and real QR code
   useEffect(() => {
-    if (!supabase || !eventId) return
+    if (!eventId) return
 
-    supabase
-      .from('events')
-      .select('*')
-      .eq('id', eventId)
-      .maybeSingle()
-      .then(({ data }: { data: any }) => {
-        if (data) {
-          const loaded = data as EventRow
-          setEventData(loaded)
-          const url = `${window.location.origin}${window.location.pathname}#/e/${loaded.slug}`
-          QRCode.toDataURL(url, {
-            margin: 2,
-            width: 320,
-            errorCorrectionLevel: 'H',
-            color: { dark: '#1c1c1e', light: '#ffffff' },
-          })
-            .then(setQrDataUrl)
-            .catch(() => setQrDataUrl(null))
-        }
-      })
+    // Load event metadata from mock (reads localStorage)
+    try {
+      const evRaw = localStorage.getItem('raffle_mock_events_v1')
+      const events: EventRow[] = evRaw ? JSON.parse(evRaw) : []
+      const ev = events.find((e) => e.id === eventId) ?? null
+      if (ev) {
+        setEventData(ev)
+        const url = `${window.location.origin}${window.location.pathname}#/e/${ev.slug}`
+        QRCode.toDataURL(url, {
+          margin: 2,
+          width: 320,
+          errorCorrectionLevel: 'H',
+          color: { dark: '#1c1c1e', light: '#ffffff' },
+        })
+          .then(setQrDataUrl)
+          .catch(() => setQrDataUrl(null))
+      }
+    } catch {
+      // ignore
+    }
 
-    // Initial load
-    reloadEntries()
+    // Initial load from localStorage (instant)
+    readLocalEntries()
 
     // Subscribe to live cross-device check-ins from phones via SSE
     const unsubscribeCloud = subscribeToLiveCheckIns((entry) => {
       syncIncomingEntry(entry)
       setRecentAttendee(`${entry.first_name} ${entry.last_name}`)
       setTimeout(() => setRecentAttendee(null), 5000)
-      reloadEntries()
+      readLocalEntries()
     })
 
-    // Subscribe to new draws via Supabase
-    const channel = supabase
-      .channel(`projector-${eventId}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'draws', filter: `event_id=eq.${eventId}` },
-        (payload: any) => {
-          setDraw(payload.new as DrawRow)
-        },
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'entries', filter: `event_id=eq.${eventId}` },
-        () => {
-          reloadEntries()
-        },
-      )
-      .subscribe()
+    // Poll localStorage every 1.5s for local changes (same-device or storage events)
+    const localInterval = setInterval(readLocalEntries, 1500)
 
-    const interval = setInterval(reloadEntries, 2500)
-    window.addEventListener('storage', reloadEntries)
-    window.addEventListener('raffle_demo_change', reloadEntries)
+    // Poll ntfy.sh every 4s to merge remote check-ins from other devices
+    const remoteInterval = setInterval(() => {
+      void syncAllRemoteCheckIns(eventId).then(() => readLocalEntries())
+    }, 4000)
+
+    // Listen for storage events (same-browser cross-tab) and custom events
+    window.addEventListener('storage', readLocalEntries)
+    window.addEventListener('raffle_demo_change', readLocalEntries)
+
+    // Kick off a first remote sync after a short delay
+    setTimeout(() => {
+      void syncAllRemoteCheckIns(eventId).then(() => readLocalEntries())
+    }, 500)
 
     return () => {
-      channel.unsubscribe()
       unsubscribeCloud()
-      clearInterval(interval)
-      window.removeEventListener('storage', reloadEntries)
-      window.removeEventListener('raffle_demo_change', reloadEntries)
+      clearInterval(localInterval)
+      clearInterval(remoteInterval)
+      window.removeEventListener('storage', readLocalEntries)
+      window.removeEventListener('raffle_demo_change', readLocalEntries)
     }
-  }, [eventId])
+  }, [eventId, readLocalEntries, syncAndReload])
 
   // Determine the active participant list for the wheel:
   // Use the draw's immutable snapshot if available, or current eligible entries
@@ -1468,18 +1469,8 @@ export function ProjectorModePage() {
     try {
       const res = await runDraw(eventId, crypto.randomUUID(), true)
       if (res?.winner_first_name) {
-        // Updated draw triggers rotation animation via listener
-        if (!supabase) return
-        supabase
-          .from('draws')
-          .select('*')
-          .eq('event_id', eventId)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-          .then(({ data }: { data: any }) => {
-            if (data) setDraw(data as DrawRow)
-          })
+        // Read the new draw directly from localStorage
+        readLocalEntries()
       }
     } catch (err) {
       alert(`Drawing failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -1503,6 +1494,9 @@ export function ProjectorModePage() {
           <h1>{eventData?.name ?? 'Projector Mode'}</h1>
           <p className="subtitle">Live Raffle Drawing</p>
         </div>
+        <Link className="button secondary" to="/">
+          🏠 Home
+        </Link>
         <Link className="button secondary" to="/host">
           Back to Host
         </Link>

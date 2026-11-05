@@ -223,7 +223,7 @@ export function syncIncomingEntry(entry: EntryRow): boolean {
     if (clearedAt) {
       const entryTime = new Date(entry.checked_in_at || entry.created_at || 0).getTime()
       const clearTime = new Date(clearedAt).getTime()
-      if (entryTime <= clearTime) {
+      if (entryTime < clearTime) {
         return false
       }
     }
@@ -281,7 +281,7 @@ export async function syncAllRemoteCheckIns(eventId = 'evt-nasa-2026'): Promise<
       if (clearedAt) {
         const inboundTime = new Date(inbound.checked_in_at || inbound.created_at || 0).getTime()
         const clearTime = new Date(clearedAt).getTime()
-        if (inboundTime <= clearTime) {
+        if (inboundTime < clearTime) {
           continue
         }
       }

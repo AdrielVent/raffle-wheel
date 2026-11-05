@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import QRCode from 'qrcode'
 import {
@@ -118,7 +118,7 @@ export function AttendeePage() {
   const params = useParams()
   const slug = params.slug ?? ''
   const [eventState, setEventState] = useState<Awaited<ReturnType<typeof getPublicEvent>>>()
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => Boolean(isBackendConfigured && slug))
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [hofstraUsername, setHofstraUsername] = useState('')
@@ -130,10 +130,7 @@ export function AttendeePage() {
   const headingRef = useRef<HTMLHeadingElement>(null)
 
   useEffect(() => {
-    if (!isBackendConfigured || !slug) {
-      setLoading(false)
-      return
-    }
+    if (!isBackendConfigured || !slug) return
 
     setLoading(true)
     getPublicEvent(slug)
@@ -383,7 +380,7 @@ export function AttendeePage() {
 
 export function HostDashboard() {
   const navigate = useNavigate()
-  const [sessionReady, setSessionReady] = useState(false)
+  const [sessionReady, setSessionReady] = useState(() => !supabase || !isBackendConfigured)
   const [email, setEmail] = useState('')
   const [authMessage, setAuthMessage] = useState<string | null>(null)
   const [events, setEvents] = useState<EventRow[]>([])
@@ -398,7 +395,7 @@ export function HostDashboard() {
   const [lastWinner, setLastWinner] = useState<string | null>(null)
   const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null
 
-  async function refreshEvents() {
+  const refreshEvents = useCallback(async () => {
     if (!supabase) return
     const { data, error } = await supabase
       .from('events')
@@ -408,13 +405,11 @@ export function HostDashboard() {
     if (!error && data) {
       const loaded = data as EventRow[]
       setEvents(loaded)
-      if (!selectedEventId && loaded[0]) {
-        setSelectedEventId(loaded[0].id)
-      }
+      setSelectedEventId((prev) => prev ?? (loaded[0] ? loaded[0].id : null))
     }
-  }
+  }, [])
 
-  async function refreshEventDetails(eventId: string) {
+  const refreshEventDetails = useCallback(async (eventId: string) => {
     if (!supabase) return
 
     const [entriesResponse, drawsResponse] = await Promise.all([
@@ -437,13 +432,10 @@ export function HostDashboard() {
     if (!drawsResponse.error && drawsResponse.data) {
       setDraws(drawsResponse.data as DrawRow[])
     }
-  }
+  }, [])
 
   useEffect(() => {
-    if (!supabase || !isBackendConfigured) {
-      setSessionReady(true)
-      return
-    }
+    if (!supabase || !isBackendConfigured) return
 
     supabase.auth.getSession().finally(async () => {
       await refreshEvents()
@@ -456,12 +448,10 @@ export function HostDashboard() {
     })
 
     return () => data.subscription.unsubscribe()
-  }, [])
+  }, [refreshEvents])
 
   useEffect(() => {
     if (!selectedEventId) {
-      setEntries([])
-      setDraws([])
       return
     }
 
@@ -497,7 +487,7 @@ export function HostDashboard() {
       channel.unsubscribe()
       clearInterval(interval)
     }
-  }, [selectedEventId])
+  }, [selectedEventId, refreshEventDetails])
 
   const duplicateIds = useMemo(() => findDuplicateNameIds(entries), [entries])
 
@@ -516,10 +506,7 @@ export function HostDashboard() {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!entryLink) {
-      setQrDataUrl(null)
-      return
-    }
+    if (!entryLink) return
 
     QRCode.toDataURL(entryLink, {
       margin: 2,

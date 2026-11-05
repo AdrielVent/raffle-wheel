@@ -23,25 +23,26 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.35rem 0.75rem;
-  background: linear-gradient(180deg, #ebebf0 0%, #dcdce2 100%);
-  border: 1px solid #c8c8d0;
+  padding: 0.35rem 0.85rem;
+  background: linear-gradient(180deg, #f7f7f9 0%, #ebebef 50%, #d8d8de 100%);
+  border: 1px solid #bfbfc7;
   border-radius: 6px 6px 0 0;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #3a3a3c;
-  letter-spacing: 0.02em;
+  font-size: 0.725rem;
+  font-weight: 700;
+  color: #2c2c2e;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   margin-bottom: 0.5rem;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .status-title {
   font-weight: 700;
+  letter-spacing: 0.05em;
 }
 
 .status-time {
-  color: #636366;
+  color: #555558;
 }
 
 /* Page Header */
@@ -66,17 +67,17 @@
 /* iPod Card & Screen Housing */
 .panel {
   background: #ffffff;
-  border: 1px solid #d2d2d7;
-  border-radius: 8px;
+  border: 1px solid #c7c7cc;
+  border-radius: 7px;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.9);
   overflow: hidden;
 }
 
 .ipod-card {
-  border: 1px solid #d2d2d7;
-  border-radius: 8px;
+  border: 1px solid #c7c7cc;
+  border-radius: 7px;
   background: #ffffff;
 }
 
@@ -86,32 +87,34 @@
   align-items: center;
   justify-content: space-between;
   padding: 0.4rem 0.85rem;
-  background: linear-gradient(180deg, #f0f0f4 0%, #e2e2e8 100%);
-  border-bottom: 1px solid #d1d1d6;
-  font-size: 0.75rem;
+  background: linear-gradient(180deg, #f8f8fa 0%, #ebebef 50%, #dfdfe5 100%);
+  border-bottom: 1px solid #c8c8cf;
+  font-size: 0.725rem;
   font-weight: 700;
-  color: #3a3a3c;
+  color: #2c2c2e;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .ipod-battery-icon {
-  width: 16px;
-  height: 8px;
-  border: 1px solid #636366;
+  width: 18px;
+  height: 9px;
+  border: 1px solid #48484a;
   border-radius: 2px;
   position: relative;
-  background: #34c759;
+  background: linear-gradient(180deg, #4cd964 0%, #34c759 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
 .ipod-battery-icon::after {
   content: '';
   position: absolute;
-  top: 1px;
+  top: 1.5px;
   right: -3px;
   width: 2px;
   height: 4px;
-  background: #636366;
+  background: #48484a;
   border-radius: 0 1px 1px 0;
 }
 
@@ -164,17 +167,17 @@ label {
 .input-with-suffix {
   display: flex;
   align-items: stretch;
-  border: 1px solid #c7c7cc;
-  border-radius: 6px;
+  border: 1px solid #b8b8c2;
+  border-radius: 5px;
   background: #ffffff;
   overflow: hidden;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .input-with-suffix:focus-within {
   border-color: #0071e3;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04), 0 0 0 3px rgba(0, 113, 227, 0.25);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05), 0 0 0 3px rgba(0, 113, 227, 0.22);
 }
 
 .input-with-suffix input {
@@ -196,31 +199,33 @@ label {
   display: inline-flex;
   align-items: center;
   padding: 0.65rem 0.85rem;
-  background: linear-gradient(180deg, #f2f2f5 0%, #e2e2e7 100%);
-  border-left: 1px solid #c7c7cc;
+  background: linear-gradient(180deg, #f7f7f9 0%, #ebebef 50%, #dfdfe5 100%);
+  border-left: 1px solid #b8b8c2;
   font-size: 0.875rem;
   font-weight: 600;
-  color: #3a3a3c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #2c2c2e;
   user-select: none;
   letter-spacing: -0.01em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 input {
-  border: 1px solid #c7c7cc;
-  border-radius: 6px;
+  border: 1px solid #b8b8c2;
+  border-radius: 5px;
   padding: 0.65rem 0.75rem;
   font: inherit;
   font-size: 0.95rem;
   background: #ffffff;
   color: #1d1d1f;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 input:focus {
   outline: none;
   border-color: #0071e3;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04), 0 0 0 3px rgba(0, 113, 227, 0.25);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05), 0 0 0 3px rgba(0, 113, 227, 0.22);
 }
 
 .helper-text {
@@ -244,25 +249,25 @@ input:focus {
   font-size: 0.9rem;
   font-weight: 600;
   padding: 0.6rem 1rem;
-  border-radius: 6px;
+  border-radius: 5px;
   border: 1px solid #0056ba;
-  background: linear-gradient(180deg, #1c7ff4 0%, #0066db 100%);
+  background: linear-gradient(180deg, #1c7ff4 0%, #0066db 50%, #0056b8 100%);
   color: #ffffff;
   cursor: pointer;
   text-decoration: none;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 1px 2px rgba(0, 0, 0, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 1px 2px rgba(0, 0, 0, 0.15);
   transition: all 0.1s ease;
   user-select: none;
 }
 
 .button:hover:not(:disabled) {
-  background: linear-gradient(180deg, #2b8cff 0%, #0b72eb 100%);
+  background: linear-gradient(180deg, #2b8cff 0%, #0b72eb 50%, #005ec8 100%);
   border-color: #004da8;
 }
 
 .button:active:not(:disabled) {
   background: linear-gradient(180deg, #005bc4 0%, #0051b0 100%);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
   transform: translateY(1px);
 }
 
@@ -280,20 +285,21 @@ input:focus {
 }
 
 .button.secondary {
-  background: linear-gradient(180deg, #ffffff 0%, #ececed 100%);
+  background: linear-gradient(180deg, #ffffff 0%, #f4f4f7 50%, #e2e2e8 100%);
   color: #1d1d1f;
-  border-color: #c7c7cc;
+  border: 1px solid #bcbcc4;
   box-shadow: inset 0 1px 0 #ffffff, 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 .button.secondary:hover:not(:disabled) {
-  background: linear-gradient(180deg, #f5f5f7 0%, #e0e0e3 100%);
-  border-color: #b0b0b8;
+  background: linear-gradient(180deg, #f7f7fa 0%, #eaeaf0 50%, #d8d8de 100%);
+  border-color: #a8a8b2;
 }
 
 .button.secondary:active:not(:disabled) {
-  background: #dedee2;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+  background: #dedee4;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18);
+  transform: translateY(1px);
 }
 
 .button.export-action {
@@ -754,8 +760,8 @@ input:focus {
   width: min(70vw, 460px);
   height: min(70vw, 460px);
   border-radius: 50%;
-  border: 8px solid #2a2a2e;
-  box-shadow: 0 0 0 3px #d8d8de, 0 0 0 5px #b0b0b8, 0 10px 28px rgba(0, 0, 0, 0.16);
+  border: 8px solid #222226;
+  box-shadow: 0 0 0 2px #4e4e54, 0 0 0 5px #dcdce2, 0 0 0 7px #b8b8c0, 0 12px 30px rgba(0, 0, 0, 0.18);
   transition: transform 4s cubic-bezier(0.12, 0.85, 0.2, 1);
   position: relative;
 }
@@ -770,13 +776,13 @@ input:focus {
 .wheel-center {
   width: 26%;
   height: 26%;
-  background: radial-gradient(circle, #ffffff 0%, #ebebef 65%, #c8c8d0 100%);
+  background: radial-gradient(circle at 40% 35%, #ffffff 0%, #ebebf0 55%, #c0c0c8 100%);
   border-radius: 50%;
   position: absolute;
   top: 37%;
   left: 37%;
-  border: 3px solid #636366;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2), inset 0 1px 2px rgba(255, 255, 255, 0.8);
+  border: 3px solid #787880;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.22), inset 0 1px 2px rgba(255, 255, 255, 0.9);
 }
 
 /* Tactile Triangular Pointer */

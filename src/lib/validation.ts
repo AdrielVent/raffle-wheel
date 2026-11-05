@@ -1,6 +1,6 @@
 export const NAME_MAX_LENGTH = 100
 
-const namePattern = /^[\p{L}\p{M}](?:[\p{L}\p{M}\s'\-]{0,98}[\p{L}\p{M}])?$/u
+const namePattern = /^[\p{L}\p{M}](?:[\p{L}\p{M}\s'-]{0,98}[\p{L}\p{M}])?$/u
 
 export type NameValidationResult = {
   ok: boolean

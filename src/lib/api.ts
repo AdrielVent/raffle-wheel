@@ -15,6 +15,7 @@ export type SubmissionResponse = {
     | 'accepted'
     | 'duplicate'
     | 'already_checked_in'
+    | 'duplicate_email'
     | 'closed'
     | 'ended'
     | 'invalid_event'
@@ -132,14 +133,35 @@ export async function deleteEventData(eventId: string) {
   if (error) throw error
 }
 
-export async function removeEntry(eventId: string, entryId: string) {
+/**
+ * Excludes an attendee from raffle drawing without deleting their attendance record.
+ */
+export async function setEntryIneligible(eventId: string, entryId: string, ineligible: boolean) {
   const client = requireSupabase()
-  const { error } = await client.rpc('remove_entry', {
+  const { error } = await client.rpc('set_entry_ineligible', {
+    p_event_id: eventId,
+    p_entry_id: entryId,
+    p_ineligible: ineligible,
+  })
+
+  if (error) throw error
+}
+
+/**
+ * Explicit confirmed deletion of an attendee record.
+ */
+export async function deleteEntryRecord(eventId: string, entryId: string) {
+  const client = requireSupabase()
+  const { error } = await client.rpc('delete_entry_record', {
     p_event_id: eventId,
     p_entry_id: entryId,
   })
 
   if (error) throw error
+}
+
+export async function removeEntry(eventId: string, entryId: string) {
+  return setEntryIneligible(eventId, entryId, true)
 }
 
 export async function runDraw(eventId: string, requestId: string, removeWinner: boolean) {

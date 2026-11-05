@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import QRCode from 'qrcode'
 import {
@@ -14,23 +14,25 @@ import './App.css'
 import {
   clearEntries,
   createEvent,
+  deleteEntryRecord,
   deleteEventData,
   endEvent,
   getPublicEvent,
-  removeEntry,
   runDraw,
+  setEntryIneligible,
   setRegistration,
   submitEntry,
 } from './lib/api'
 import { isBackendConfigured } from './lib/env'
 import { findDuplicateNameIds } from './lib/duplicates'
+import { downloadAttendanceExcel } from './lib/excel'
 import { getPreferenceKey, getReceiptKey } from './lib/storage'
 import { supabase } from './lib/supabase'
 import { normalizeHofstraUsername } from './lib/hofstraEmail'
 import { validateFullName } from './lib/validation'
 import { computeWheelRotation } from './lib/wheel'
 
-type EventRow = {
+export type EventRow = {
   id: string
   name: string
   slug: string
@@ -39,7 +41,7 @@ type EventRow = {
   created_at: string
 }
 
-type EntryRow = {
+export type EntryRow = {
   id: string
   event_id: string
   first_name: string
@@ -50,7 +52,7 @@ type EntryRow = {
   created_at: string
 }
 
-type DrawRow = {
+export type DrawRow = {
   id: string
   event_id: string
   request_id: string
@@ -65,7 +67,7 @@ type DrawRow = {
 
 function BackendRequiredMessage() {
   return (
-    <div className="panel">
+    <div className="panel ipod-card">
       <h2>Backend setup required</h2>
       <p>
         This app is intentionally disabled until Supabase credentials are configured.
@@ -77,20 +79,26 @@ function BackendRequiredMessage() {
 
 function HomePage() {
   return (
-    <main className="container">
-      <h1>QR Raffle Wheel</h1>
-      <p>Anonymous event check-in with first name, last name, and Hofstra email username.</p>
+    <main className="container narrow">
+      <header className="page-header">
+        <h1>QR Raffle Wheel</h1>
+        <p className="subtitle">Event check-in and server-authoritative raffle drawings</p>
+      </header>
       {!isBackendConfigured && <BackendRequiredMessage />}
-      <div className="actions">
-        <Link className="button" to="/host">
-          Host dashboard
-        </Link>
-      </div>
+      <section className="panel ipod-card">
+        <h2>Host Controls</h2>
+        <p>Manage events, download attendance workbooks, and run fair raffle drawings.</p>
+        <div className="actions">
+          <Link className="button" to="/host">
+            Host Dashboard
+          </Link>
+        </div>
+      </section>
     </main>
   )
 }
 
-function AttendeePage() {
+export function AttendeePage() {
   const params = useParams()
   const slug = params.slug ?? ''
   const [eventState, setEventState] = useState<Awaited<ReturnType<typeof getPublicEvent>>>()
@@ -101,7 +109,9 @@ function AttendeePage() {
   const [submitting, setSubmitting] = useState(false)
   const [usernameError, setUsernameError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState<string | null>(null)
+  const [confirmed, setConfirmed] = useState<{ firstName: string; eventName: string } | null>(null)
+
+  const headingRef = useRef<HTMLHeadingElement>(null)
 
   useEffect(() => {
     if (!isBackendConfigured || !slug) {
@@ -116,7 +126,30 @@ function AttendeePage() {
       .finally(() => setLoading(false))
   }, [slug])
 
-  const submitDisabled = submitting || loading || !eventState || eventState.status !== 'open' || !eventState.registration_open
+  // Move accessible focus to confirmation heading when confirmed screen renders
+  useEffect(() => {
+    if (confirmed && headingRef.current) {
+      headingRef.current.focus()
+    }
+  }, [confirmed])
+
+  function handleUsernameChange(rawValue: string) {
+    const trimmed = rawValue.trim()
+    const atIndex = trimmed.indexOf('@')
+    if (atIndex !== -1) {
+      const candidateDomain = trimmed.slice(atIndex + 1).toLocaleLowerCase()
+      if (candidateDomain === 'hofstra.edu') {
+        setHofstraUsername(trimmed.slice(0, atIndex).trim())
+        setUsernameError(null)
+        return
+      }
+    }
+    setHofstraUsername(rawValue)
+    setUsernameError(null)
+  }
+
+  const submitDisabled =
+    submitting || loading || !eventState || eventState.status !== 'open' || !eventState.registration_open
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault()
@@ -125,7 +158,9 @@ function AttendeePage() {
     const emailValidation = normalizeHofstraUsername(hofstraUsername)
 
     setError(validation.first.message ?? validation.last.message ?? null)
-    setUsernameError(emailValidation.ok ? null : (emailValidation.message ?? 'Invalid Hofstra email username.'))
+    setUsernameError(
+      emailValidation.ok ? null : emailValidation.message ?? 'Invalid Hofstra email username.',
+    )
 
     if (!validation.ok || !emailValidation.ok) {
       return
@@ -142,9 +177,11 @@ function AttendeePage() {
     const submissionId = parsed?.submissionId ?? crypto.randomUUID()
     const retryReceipt = parsed?.retryReceipt ?? crypto.randomUUID()
 
+    // Save retry identifiers BEFORE network request to guarantee safe client-side idempotency
+    localStorage.setItem(receiptKey, JSON.stringify({ submissionId, retryReceipt }))
+
     setSubmitting(true)
     setError(null)
-    setSuccess(null)
 
     try {
       const response = await submitEntry(
@@ -156,21 +193,23 @@ function AttendeePage() {
         retryReceipt,
       )
 
-      if (response.status === 'accepted' || response.status === 'duplicate' || response.status === 'already_checked_in') {
+      if (response.status === 'accepted' || response.status === 'duplicate') {
         localStorage.setItem(
           receiptKey,
           JSON.stringify({ submissionId, retryReceipt: response.receipt_id ?? retryReceipt }),
         )
         setUsernameError(null)
-        if (response.status === 'already_checked_in') {
-          setSuccess('This Hofstra email is already checked in for this event.')
-        } else {
-          setSuccess(`You're in, ${validation.first.value}! Watch the main screen for the drawing.`)
-        }
+        setConfirmed({
+          firstName: validation.first.value,
+          eventName: eventState.name,
+        })
         return
       }
 
-      if (response.status === 'closed') {
+      // Do NOT treat an unrelated duplicate-email response as a confirmed check-in
+      if (response.status === 'already_checked_in' || response.status === 'duplicate_email') {
+        setError('This Hofstra email is already checked in for this event.')
+      } else if (response.status === 'closed') {
         setError('Registration for this event is currently closed.')
       } else if (response.status === 'ended') {
         setError('This raffle has ended.')
@@ -195,8 +234,34 @@ function AttendeePage() {
 
   if (!isBackendConfigured) {
     return (
-      <main className="container">
+      <main className="container narrow">
         <BackendRequiredMessage />
+      </main>
+    )
+  }
+
+  // 2. DEDICATED CONFIRMATION SCREEN
+  if (confirmed) {
+    return (
+      <main className="container narrow confirmation-screen">
+        <div className="panel ipod-card confirmation-card">
+          <h1 ref={headingRef} tabIndex={-1} className="confirmation-heading">
+            Thank you for attending the NASA event!
+          </h1>
+          <p className="confirmation-greeting">
+            You’re checked in, {confirmed.firstName}, and entered into the raffle.
+          </p>
+          <p className="confirmation-instruction">
+            Watch the main screen for the drawing.
+          </p>
+          <p className="confirmation-dismiss">
+            You can close this page.
+          </p>
+          <div className="confirmation-secondary">
+            <span className="event-tag">Event</span>
+            <span className="event-title-context">{confirmed.eventName}</span>
+          </div>
+        </div>
       </main>
     )
   }
@@ -206,13 +271,19 @@ function AttendeePage() {
 
   return (
     <main className="container narrow">
-      <h1>Join raffle</h1>
-      {loading && <p>Loading event…</p>}
-      {!loading && !eventState && <p className="state-banner">This QR code is invalid.</p>}
-      {isClosed && <p className="state-banner">Registration is closed for now. Please check with the host.</p>}
-      {isEnded && <p className="state-banner">This raffle is over. Thanks for joining!</p>}
+      <header className="page-header">
+        <h1>{eventState?.name ?? 'Event Check-In'}</h1>
+        <p className="subtitle">Enter your name and Hofstra email to check in and join the raffle</p>
+      </header>
 
-      <form onSubmit={onSubmit} className="panel" aria-disabled={submitDisabled}>
+      {loading && <p className="status-text">Loading event…</p>}
+      {!loading && !eventState && <p className="state-banner warning">This QR code is invalid.</p>}
+      {isClosed && (
+        <p className="state-banner warning">Registration is closed for now. Please check with the host.</p>
+      )}
+      {isEnded && <p className="state-banner warning">This raffle is over. Thanks for joining!</p>}
+
+      <form onSubmit={onSubmit} className="panel ipod-card" aria-disabled={submitDisabled}>
         <label>
           First name
           <input
@@ -222,6 +293,7 @@ function AttendeePage() {
             maxLength={100}
             autoComplete="given-name"
             required
+            disabled={submitting}
           />
         </label>
 
@@ -234,6 +306,7 @@ function AttendeePage() {
             maxLength={100}
             autoComplete="family-name"
             required
+            disabled={submitting}
           />
         </label>
 
@@ -243,42 +316,35 @@ function AttendeePage() {
             <input
               type="text"
               value={hofstraUsername}
-              onChange={(e) => {
-                const rawValue = e.target.value
-                const trimmed = rawValue.trim()
-                const atCount = (trimmed.match(/@/g) ?? []).length
-                if (atCount === 1 && trimmed.toLocaleLowerCase().endsWith('@hofstra.edu')) {
-                  setHofstraUsername(trimmed.slice(0, trimmed.length - '@hofstra.edu'.length))
-                } else {
-                  setHofstraUsername(rawValue)
-                }
-              }}
+              onChange={(e) => handleUsernameChange(e.target.value)}
               autoComplete="email"
               placeholder="aventura2"
               required
+              disabled={submitting}
             />
-            <span>@hofstra.edu</span>
+            <span className="email-suffix">@hofstra.edu</span>
           </div>
           <small className="helper-text">Enter the part before @hofstra.edu.</small>
-          {usernameError && <small className="error">{usernameError}</small>}
+          {usernameError && <small className="error-text">{usernameError}</small>}
         </label>
 
-        <button className="button" type="submit" disabled={submitDisabled}>
+        <button className="button primary-action" type="submit" disabled={submitDisabled}>
           {submitting ? 'Checking in…' : 'Check In & Join Raffle'}
         </button>
 
         <p className="privacy-note">
-          Privacy: first and last names plus Hofstra email addresses are collected for event check-in and raffle administration. Only winning names may be displayed publicly.
+          Privacy: First and last names plus Hofstra email addresses are collected for event check-in
+          and raffle administration. Only winning names may be displayed publicly. Email addresses
+          are self-reported and not verified.
         </p>
       </form>
 
-      {error && <p className="error">{error}</p>}
-      {success && <p className="success">{success}</p>}
+      {error && <p className="state-banner error">{error}</p>}
     </main>
   )
 }
 
-function HostDashboard() {
+export function HostDashboard() {
   const navigate = useNavigate()
   const [sessionReady, setSessionReady] = useState(false)
   const [email, setEmail] = useState('')
@@ -291,6 +357,7 @@ function HostDashboard() {
   const [search, setSearch] = useState('')
   const [removeWinners, setRemoveWinners] = useState(true)
   const [drawing, setDrawing] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [lastWinner, setLastWinner] = useState<string | null>(null)
   const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null
 
@@ -365,18 +432,33 @@ function HostDashboard() {
 
     if (!supabase) return
 
+    // Supabase Realtime subscription
     const channel = supabase
       .channel(`event-live-${selectedEventId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'entries', filter: `event_id=eq.${selectedEventId}` }, () => {
-        refreshEventDetails(selectedEventId)
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'draws', filter: `event_id=eq.${selectedEventId}` }, () => {
-        refreshEventDetails(selectedEventId)
-      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'entries', filter: `event_id=eq.${selectedEventId}` },
+        () => {
+          refreshEventDetails(selectedEventId)
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'draws', filter: `event_id=eq.${selectedEventId}` },
+        () => {
+          refreshEventDetails(selectedEventId)
+        },
+      )
       .subscribe()
+
+    // Fallback periodic poll every 5s to ensure live synchronization across devices
+    const interval = setInterval(() => {
+      refreshEventDetails(selectedEventId)
+    }, 5000)
 
     return () => {
       channel.unsubscribe()
+      clearInterval(interval)
     }
   }, [selectedEventId])
 
@@ -403,12 +485,12 @@ function HostDashboard() {
     }
 
     QRCode.toDataURL(entryLink, {
-      margin: 4,
+      margin: 2,
       width: 280,
       errorCorrectionLevel: 'H',
       color: {
-        dark: '#000000',
-        light: '#FFFFFF',
+        dark: '#1d1d1f',
+        light: '#ffffff',
       },
     })
       .then(setQrDataUrl)
@@ -417,7 +499,11 @@ function HostDashboard() {
 
   async function onSignIn() {
     if (!supabase) return
-    const { error } = await supabase.auth.signInWithOtp({ email })
+    const redirectUrl = window.location.origin + window.location.pathname
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: redirectUrl },
+    })
     setAuthMessage(error ? error.message : 'Check your email for the sign-in link.')
   }
 
@@ -437,6 +523,44 @@ function HostDashboard() {
     await refreshEvents()
   }
 
+  async function onToggleEligibility(entryId: string, ineligible: boolean) {
+    if (!selectedEventId) return
+    await setEntryIneligible(selectedEventId, entryId, ineligible)
+    await refreshEventDetails(selectedEventId)
+  }
+
+  async function onDeleteEntry(entryId: string) {
+    if (!selectedEventId) return
+    if (window.confirm('Permanently delete this attendee record? This cannot be undone.')) {
+      await deleteEntryRecord(selectedEventId, entryId)
+      await refreshEventDetails(selectedEventId)
+    }
+  }
+
+  async function onDownloadExcel() {
+    if (!selectedEvent) return
+    setExporting(true)
+    try {
+      // Ensure we export all attendance records for the selected event, not just the search view
+      let exportList = entries
+      if (supabase) {
+        const { data } = await supabase
+          .from('entries')
+          .select('*')
+          .eq('event_id', selectedEvent.id)
+          .order('created_at', { ascending: true })
+        if (data) {
+          exportList = data as EntryRow[]
+        }
+      }
+      await downloadAttendanceExcel(selectedEvent.name, selectedEvent.slug, exportList)
+    } catch (err) {
+      alert(`Excel export failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   async function onDraw() {
     if (!selectedEventId || drawing) return
 
@@ -451,6 +575,8 @@ function HostDashboard() {
         setLastWinner(`${result.winner_first_name} ${result.winner_last_name}`)
       }
       await refreshEventDetails(selectedEventId)
+    } catch (err) {
+      setLastWinner(`Draw failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     } finally {
       setDrawing(false)
     }
@@ -458,7 +584,7 @@ function HostDashboard() {
 
   if (!isBackendConfigured) {
     return (
-      <main className="container">
+      <main className="container narrow">
         <BackendRequiredMessage />
       </main>
     )
@@ -466,8 +592,8 @@ function HostDashboard() {
 
   if (!sessionReady) {
     return (
-      <main className="container">
-        <p>Loading host dashboard…</p>
+      <main className="container narrow">
+        <p className="status-text">Loading host dashboard…</p>
       </main>
     )
   }
@@ -475,13 +601,18 @@ function HostDashboard() {
   return (
     <main className="container host-layout">
       <header className="host-header">
-        <h1>Host Dashboard</h1>
-        <Link to="/">Back</Link>
+        <div>
+          <h1>Host Dashboard</h1>
+          <p className="subtitle">Manage raffle events and attendance records</p>
+        </div>
+        <Link className="button secondary" to="/">
+          Home
+        </Link>
       </header>
 
-      <section className="panel">
-        <h2>Host authentication</h2>
-        <div className="row">
+      <section className="panel ipod-card">
+        <h2>Host Authentication</h2>
+        <div className="row wrap">
           <input
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -489,94 +620,142 @@ function HostDashboard() {
             placeholder="host@example.edu"
           />
           <button className="button" type="button" onClick={onSignIn}>
-            Send sign-in link
+            Send Sign-In Link
           </button>
           <button className="button secondary" type="button" onClick={onSignOut}>
-            Sign out
+            Sign Out
           </button>
         </div>
-        {authMessage && <p>{authMessage}</p>}
+        {authMessage && <p className="status-note">{authMessage}</p>}
       </section>
 
-      <section className="panel">
-        <h2>Create event</h2>
-        <form className="row" onSubmit={onCreateEvent}>
+      <section className="panel ipod-card">
+        <h2>Create Event</h2>
+        <form className="row wrap" onSubmit={onCreateEvent}>
           <input
             value={newEventName}
             onChange={(e) => setNewEventName(e.target.value)}
-            placeholder="Campus Festival Raffle"
+            placeholder="Event Name (e.g. NASA Tech Expo)"
             required
           />
           <button className="button" type="submit">
-            Create
+            Create Event
           </button>
         </form>
       </section>
 
-      <section className="panel">
-        <h2>Your events</h2>
-        <div className="event-grid">
-          {events.map((event) => (
-            <button
-              key={event.id}
-              className={`event-card ${selectedEventId === event.id ? 'active' : ''}`}
-              onClick={() => setSelectedEventId(event.id)}
-              type="button"
-            >
-              <strong>{event.name}</strong>
-              <span>{event.status}</span>
-            </button>
-          ))}
-        </div>
+      <section className="panel ipod-card">
+        <h2>Your Events</h2>
+        {events.length === 0 ? (
+          <p className="empty-text">No events created yet.</p>
+        ) : (
+          <div className="event-grid">
+            {events.map((event) => (
+              <button
+                key={event.id}
+                className={`event-card ${selectedEventId === event.id ? 'active' : ''}`}
+                onClick={() => setSelectedEventId(event.id)}
+                type="button"
+              >
+                <strong>{event.name}</strong>
+                <span className={`status-badge status-${event.status}`}>{event.status}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       {selectedEvent && (
         <>
-          <section className="panel two-col">
+          <section className="panel ipod-card two-col">
             <div>
-              <h2>Entry link & QR</h2>
-              <p className="mono">{entryLink}</p>
-              <div className="row">
-                <button className="button" onClick={() => navigator.clipboard.writeText(entryLink)}>
-                  Copy link
+              <h2>Entry Link & QR Code</h2>
+              <p className="mono-link">{entryLink}</p>
+              <div className="row wrap">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => navigator.clipboard.writeText(entryLink)}
+                >
+                  Copy Link
                 </button>
-                <a className="button secondary" href={qrDataUrl ?? '#'} download={`${selectedEvent.slug}.png`}>
+                <a
+                  className="button secondary"
+                  href={qrDataUrl ?? '#'}
+                  download={`${selectedEvent.slug}-qr.png`}
+                >
                   Download QR
                 </a>
-                <button className="button secondary" type="button" onClick={() => navigate(`/host/projector/${selectedEvent.id}`)}>
-                  Projector mode
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={() => navigate(`/host/projector/${selectedEvent.id}`)}
+                >
+                  Projector Mode
+                </button>
+                <button
+                  className="button export-action"
+                  type="button"
+                  onClick={onDownloadExcel}
+                  disabled={exporting}
+                >
+                  {exporting ? 'Exporting…' : 'Download Excel'}
                 </button>
               </div>
             </div>
-            <div className="qr-wrap">{qrDataUrl && <img src={qrDataUrl} alt={`QR code for ${selectedEvent.name}`} />}</div>
+            <div className="qr-wrap">
+              {qrDataUrl && <img src={qrDataUrl} alt={`QR code for ${selectedEvent.name}`} />}
+            </div>
           </section>
 
-          <section className="panel">
-            <h2>Controls</h2>
+          <section className="panel ipod-card">
+            <h2>Event Controls</h2>
             <div className="row wrap">
-              <button className="button" onClick={() => setRegistration(selectedEvent.id, true)}>
-                Open registration
+              <button
+                className="button"
+                type="button"
+                onClick={() => setRegistration(selectedEvent.id, true)}
+              >
+                Open Registration
               </button>
-              <button className="button secondary" onClick={() => setRegistration(selectedEvent.id, false)}>
-                Close registration
+              <button
+                className="button secondary"
+                type="button"
+                onClick={() => setRegistration(selectedEvent.id, false)}
+              >
+                Close Registration
               </button>
-              <button className="button secondary" onClick={() => endEvent(selectedEvent.id)}>
-                End event
+              <button
+                className="button secondary"
+                type="button"
+                onClick={() => endEvent(selectedEvent.id)}
+              >
+                End Event
               </button>
               <button
                 className="button danger"
+                type="button"
                 onClick={() => {
-                  if (window.confirm('Clear all entries for this event?')) {
+                  if (
+                    window.confirm(
+                      'Clear all entries for this event? All attendance records will be removed.',
+                    )
+                  ) {
                     clearEntries(selectedEvent.id).then(() => refreshEventDetails(selectedEvent.id))
                   }
                 }}
               >
-                Clear entries
+                Clear Entries
               </button>
               <button
                 className="button danger"
+                type="button"
                 onClick={() => {
-                  if (window.confirm('Delete this event and its data? This cannot be undone.')) {
+                  if (
+                    window.confirm(
+                      'Delete this event and all its data? This action cannot be undone.',
+                    )
+                  ) {
                     deleteEventData(selectedEvent.id).then(() => {
                       setSelectedEventId(null)
                       refreshEvents()
@@ -584,13 +763,13 @@ function HostDashboard() {
                   }
                 }}
               >
-                Delete event data
+                Delete Event Data
               </button>
             </div>
           </section>
 
-          <section className="panel">
-            <h2>Draw</h2>
+          <section className="panel ipod-card">
+            <h2>Raffle Drawing</h2>
             <div className="row wrap">
               <label className="inline-control">
                 <input
@@ -598,51 +777,103 @@ function HostDashboard() {
                   checked={removeWinners}
                   onChange={(e) => {
                     setRemoveWinners(e.target.checked)
-                    localStorage.setItem(getPreferenceKey(selectedEvent.id, 'removeWinners'), e.target.checked ? '1' : '0')
+                    localStorage.setItem(
+                      getPreferenceKey(selectedEvent.id, 'removeWinners'),
+                      e.target.checked ? '1' : '0',
+                    )
                   }}
                 />
                 Remove winners from future draws
               </label>
-              <button className="button" onClick={onDraw} disabled={drawing}>
-                {drawing ? 'Drawing…' : 'Run draw'}
+              <button className="button primary-action" type="button" onClick={onDraw} disabled={drawing}>
+                {drawing ? 'Drawing…' : 'Run Draw'}
               </button>
             </div>
-            {lastWinner && <p className="success">Winner: {lastWinner}</p>}
-            <ol>
-              {draws.map((draw) => (
-                <li key={draw.id}>
-                  {new Date(draw.created_at).toLocaleString()} —{' '}
-                  {draw.winner_first_name ? `${draw.winner_first_name} ${draw.winner_last_name}` : 'No winner'}
-                  {draw.remove_winner ? ' (removed)' : ''}
-                </li>
-              ))}
-            </ol>
+            {lastWinner && <p className="winner-callout">{lastWinner}</p>}
+            <div className="draw-history">
+              <h3>Drawing History</h3>
+              {draws.length === 0 ? (
+                <p className="empty-text">No drawings conducted yet.</p>
+              ) : (
+                <ol className="draw-list">
+                  {draws.map((draw) => (
+                    <li key={draw.id}>
+                      <span className="draw-time">{new Date(draw.created_at).toLocaleString()}</span>
+                      <strong className="draw-winner">
+                        {draw.winner_first_name
+                          ? `${draw.winner_first_name} ${draw.winner_last_name}`
+                          : 'No eligible winner'}
+                      </strong>
+                      {draw.remove_winner && <em className="tag-removed">removed from future</em>}
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
           </section>
 
-          <section className="panel">
-            <h2>
-              Participants ({entries.length})
-            </h2>
+          <section className="panel ipod-card">
+            <div className="section-header-row">
+              <h2>Attendance & Participants ({entries.length})</h2>
+              <button
+                className="button secondary"
+                type="button"
+                onClick={onDownloadExcel}
+                disabled={exporting}
+              >
+                {exporting ? 'Exporting…' : 'Download Excel (.xlsx)'}
+              </button>
+            </div>
             <input
-              placeholder="Search participants"
+              className="search-input"
+              placeholder="Search by name or Hofstra email…"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
-            <ul className="entry-list">
-              {filteredEntries.map((entry) => (
-                <li key={entry.id}>
-                  <span>
-                    {entry.first_name} {entry.last_name} — {entry.hofstra_email}
-                    <em> (checked in {entry.checked_in_at ? new Date(entry.checked_in_at).toLocaleString() : 'unknown time'})</em>
-                    {duplicateIds.has(entry.id) && <em> (name matches another entry)</em>}
-                    {entry.ineligible && <em> (ineligible)</em>}
-                  </span>
-                  <button className="button secondary" onClick={() => removeEntry(selectedEvent.id, entry.id)}>
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ul>
+            {filteredEntries.length === 0 ? (
+              <p className="empty-text">No participants match the search.</p>
+            ) : (
+              <ul className="entry-list">
+                {filteredEntries.map((entry) => (
+                  <li key={entry.id} className={entry.ineligible ? 'entry-ineligible' : ''}>
+                    <div className="entry-info">
+                      <strong>
+                        {entry.first_name} {entry.last_name}
+                      </strong>
+                      <span className="entry-email">{entry.hofstra_email}</span>
+                      <span className="entry-meta">
+                        Checked in:{' '}
+                        {entry.checked_in_at
+                          ? new Date(entry.checked_in_at).toLocaleString()
+                          : 'Unknown'}
+                      </span>
+                      {duplicateIds.has(entry.id) && (
+                        <span className="badge-warning">Matching name on file</span>
+                      )}
+                      {entry.ineligible && (
+                        <span className="badge-excluded">Excluded from raffle</span>
+                      )}
+                    </div>
+                    <div className="entry-actions">
+                      <button
+                        className="button secondary"
+                        type="button"
+                        onClick={() => onToggleEligibility(entry.id, !entry.ineligible)}
+                      >
+                        {entry.ineligible ? 'Re-admit' : 'Exclude'}
+                      </button>
+                      <button
+                        className="button danger-text"
+                        type="button"
+                        onClick={() => onDeleteEntry(entry.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         </>
       )}
@@ -650,17 +881,53 @@ function HostDashboard() {
   )
 }
 
-function ProjectorModePage() {
+export function ProjectorModePage() {
   const params = useParams()
   const eventId = params.eventId ?? ''
+  const [eventData, setEventData] = useState<EventRow | null>(null)
+  const [entries, setEntries] = useState<EntryRow[]>([])
   const [draw, setDraw] = useState<DrawRow | null>(null)
   const [rotation, setRotation] = useState(0)
   const [showQr, setShowQr] = useState(true)
   const [playSound, setPlaySound] = useState(false)
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
 
+  // Load event details and real QR code
   useEffect(() => {
     if (!supabase || !eventId) return
 
+    supabase
+      .from('events')
+      .select('*')
+      .eq('id', eventId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          const loaded = data as EventRow
+          setEventData(loaded)
+          const url = `${window.location.origin}${window.location.pathname}#/e/${loaded.slug}`
+          QRCode.toDataURL(url, {
+            margin: 2,
+            width: 320,
+            errorCorrectionLevel: 'H',
+            color: { dark: '#1d1d1f', light: '#ffffff' },
+          })
+            .then(setQrDataUrl)
+            .catch(() => setQrDataUrl(null))
+        }
+      })
+
+    // Load initial entries for rendering accurate wheel segments
+    supabase
+      .from('entries')
+      .select('*')
+      .eq('event_id', eventId)
+      .order('created_at', { ascending: true })
+      .then(({ data }) => {
+        if (data) setEntries(data as EntryRow[])
+      })
+
+    // Load latest draw
     supabase
       .from('draws')
       .select('*')
@@ -672,11 +939,31 @@ function ProjectorModePage() {
         if (data) setDraw(data as DrawRow)
       })
 
+    // Subscribe to new draws
     const channel = supabase
       .channel(`projector-${eventId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'draws', filter: `event_id=eq.${eventId}` }, (payload) => {
-        setDraw(payload.new as DrawRow)
-      })
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'draws', filter: `event_id=eq.${eventId}` },
+        (payload) => {
+          setDraw(payload.new as DrawRow)
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'entries', filter: `event_id=eq.${eventId}` },
+        () => {
+          if (!supabase) return
+          supabase
+            .from('entries')
+            .select('*')
+            .eq('event_id', eventId)
+            .order('created_at', { ascending: true })
+            .then(({ data }) => {
+              if (data) setEntries(data as EntryRow[])
+            })
+        },
+      )
       .subscribe()
 
     return () => {
@@ -684,50 +971,136 @@ function ProjectorModePage() {
     }
   }, [eventId])
 
+  // Determine the active participant list for the wheel:
+  // Use the draw's immutable snapshot if available, or current eligible entries
+  const wheelParticipants = useMemo(() => {
+    if (draw?.snapshot?.length) {
+      return draw.snapshot
+    }
+    return entries.filter((e) => !e.ineligible)
+  }, [draw, entries])
+
   useEffect(() => {
     if (!draw?.snapshot?.length || !draw.winner_entry_id) return
     const index = draw.snapshot.findIndex((entry) => entry.id === draw.winner_entry_id)
-    const targetRotation = computeWheelRotation(index, draw.snapshot.length)
-    setRotation(targetRotation)
+    if (index >= 0) {
+      const targetRotation = computeWheelRotation(index, draw.snapshot.length)
+      setRotation(targetRotation)
 
-    if (playSound) {
-      const audio = new Audio('data:audio/wav;base64,UklGRjQAAABXQVZFZm10IBAAAAABAAEAgD4AAIA+AAABAAgAZGF0YRAAAAAA')
-      void audio.play().catch(() => undefined)
+      if (playSound) {
+        const audio = new Audio(
+          'data:audio/wav;base64,UklGRjQAAABXQVZFZm10IBAAAAABAAEAgD4AAIA+AAABAAgAZGF0YRAAAAAA',
+        )
+        void audio.play().catch(() => undefined)
+      }
     }
   }, [draw, playSound])
 
-  const winnerName = draw?.winner_first_name ? `${draw.winner_first_name} ${draw.winner_last_name}` : 'Waiting for draw…'
+  // Generate dynamic iPod-inspired wheel background colors corresponding to real entries
+  const wheelBackground = useMemo(() => {
+    const count = wheelParticipants.length
+    if (count <= 0) {
+      return '#e5e5ea'
+    }
+    // For large lists (> 36), use a neat 12-segment motif to avoid visual clutter
+    const segmentCount = count > 36 ? 12 : count
+    const colors = [
+      '#d1d5db',
+      '#93c5fd',
+      '#cbd5e1',
+      '#bfdbfe',
+      '#e2e8f0',
+      '#60a5fa',
+      '#e5e7eb',
+      '#3b82f6',
+    ]
+
+    const sliceAngle = 360 / segmentCount
+    const stops: string[] = []
+    for (let i = 0; i < segmentCount; i++) {
+      const color = colors[i % colors.length]
+      stops.push(`${color} ${i * sliceAngle}deg ${(i + 1) * sliceAngle}deg`)
+    }
+    return `conic-gradient(${stops.join(', ')})`
+  }, [wheelParticipants])
+
+  const winnerName = draw?.winner_first_name
+    ? `${draw.winner_first_name} ${draw.winner_last_name}`
+    : 'Waiting for drawing…'
 
   return (
     <main className="container projector">
       <header className="host-header">
-        <h1>Projector Mode</h1>
-        <Link to="/host">Back to host</Link>
+        <div>
+          <h1>{eventData?.name ?? 'Projector Mode'}</h1>
+          <p className="subtitle">Live Raffle Drawing</p>
+        </div>
+        <Link className="button secondary" to="/host">
+          Back to Host
+        </Link>
       </header>
-      <div className="row wrap">
+
+      <div className="row wrap controls-bar">
         <label className="inline-control">
-          <input type="checkbox" checked={showQr} onChange={(event) => setShowQr(event.target.checked)} /> Show QR panel
+          <input
+            type="checkbox"
+            checked={showQr}
+            onChange={(event) => setShowQr(event.target.checked)}
+          />{' '}
+          Show QR Panel
         </label>
         <label className="inline-control">
-          <input type="checkbox" checked={playSound} onChange={(event) => setPlaySound(event.target.checked)} /> Play winner sound
+          <input
+            type="checkbox"
+            checked={playSound}
+            onChange={(event) => setPlaySound(event.target.checked)}
+          />{' '}
+          Play Audio Tone
         </label>
       </div>
+
       <section className="projector-grid">
         <div className="wheel-shell" aria-live="polite">
-          <div className="wheel" style={{ transform: `rotate(${rotation}deg)` }}>
+          <div className="pointer" />
+          <div
+            className="wheel"
+            style={{
+              transform: `rotate(${rotation}deg)`,
+              background: wheelBackground,
+            }}
+          >
             <div className="wheel-center" />
           </div>
-          <div className="pointer" />
+          {wheelParticipants.length > 36 && (
+            <p className="large-list-note">
+              Visual simplification enabled for large entry list ({wheelParticipants.length}{' '}
+              participants). Winner selection is server-authoritative and unbiased.
+            </p>
+          )}
         </div>
+
         {showQr && (
-          <aside className="panel">
-            <h2>Scan to join</h2>
-            <p>Hosts can show QR from dashboard for accurate event link.</p>
+          <aside className="panel ipod-card projector-qr-panel">
+            <h2>Scan to Join</h2>
+            <div className="qr-wrap">
+              {qrDataUrl ? (
+                <img src={qrDataUrl} alt={`QR code for ${eventData?.name ?? 'event'}`} />
+              ) : (
+                <p>Generating QR code…</p>
+              )}
+            </div>
+            <p className="qr-hint">Scan with your camera to open check-in.</p>
           </aside>
         )}
       </section>
-      <h2 className="winner-banner">{winnerName}</h2>
-      <p>Participants in latest draw snapshot: {draw?.snapshot_size ?? 0}</p>
+
+      <div className="winner-announcement">
+        <span className="winner-label">Winner</span>
+        <h2 className="winner-banner">{winnerName}</h2>
+        <p className="participant-summary">
+          Eligible participants in draw snapshot: {draw?.snapshot_size ?? wheelParticipants.length}
+        </p>
+      </div>
     </main>
   )
 }

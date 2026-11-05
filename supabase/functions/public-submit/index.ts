@@ -3,6 +3,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4'
 const namePattern = /^[\p{L}\p{M}](?:[\p{L}\p{M}\s'-]{0,98}[\p{L}\p{M}])?$/u
 const hofstraDomain = 'hofstra.edu'
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+}
+
 function normalizeName(value: string) {
   return value.trim()
 }
@@ -56,8 +62,12 @@ function hashFingerprint(input: string) {
 }
 
 Deno.serve(async (request) => {
+  if (request.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 })
+    return new Response('Method not allowed', { status: 405, headers: corsHeaders })
   }
 
   const body = await request.json().catch(() => null)
@@ -70,23 +80,23 @@ Deno.serve(async (request) => {
   const retryReceipt = typeof body?.retryReceipt === 'string' ? body.retryReceipt : ''
 
   if (!slug || !submissionId || !retryReceipt) {
-    return Response.json({ status: 'invalid_event' }, { status: 400 })
+    return Response.json({ status: 'invalid_event' }, { status: 400, headers: corsHeaders })
   }
 
   if (!namePattern.test(firstName) || !namePattern.test(lastName)) {
-    return Response.json({ status: 'invalid_name' }, { status: 400 })
+    return Response.json({ status: 'invalid_name' }, { status: 400, headers: corsHeaders })
   }
 
   const emailValidation = normalizeHofstraUsername(hofstraUsername)
   if (!emailValidation.ok) {
-    return Response.json({ status: 'invalid_email' }, { status: 400 })
+    return Response.json({ status: 'invalid_email' }, { status: 400, headers: corsHeaders })
   }
 
   const url = Deno.env.get('SUPABASE_URL')
   const serviceRole = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
 
   if (!url || !serviceRole) {
-    return Response.json({ status: 'invalid_event' }, { status: 500 })
+    return Response.json({ status: 'invalid_event' }, { status: 500, headers: corsHeaders })
   }
 
   const supabase = createClient(url, serviceRole)
@@ -98,15 +108,15 @@ Deno.serve(async (request) => {
     .maybeSingle()
 
   if (!event) {
-    return Response.json({ status: 'invalid_event' }, { status: 404 })
+    return Response.json({ status: 'invalid_event' }, { status: 404, headers: corsHeaders })
   }
 
   if (event.status === 'ended') {
-    return Response.json({ status: 'ended' }, { status: 200 })
+    return Response.json({ status: 'ended' }, { status: 200, headers: corsHeaders })
   }
 
   if (event.status !== 'open' || !event.registration_open) {
-    return Response.json({ status: 'closed' }, { status: 200 })
+    return Response.json({ status: 'closed' }, { status: 200, headers: corsHeaders })
   }
 
   const fingerprint = await hashFingerprint(
@@ -120,7 +130,37 @@ Deno.serve(async (request) => {
   })
 
   if (!canProceed) {
-    return Response.json({ status: 'rate_limited' }, { status: 429 })
+    return Response.json({ status: 'rate_limited' }, { status: 429, headers: corsHeaders })
+  }
+
+  // Check if this specific submission_id was already accepted
+  const { data: existingSubmission } = await supabase
+    .from('entries')
+    .select('retry_receipt')
+    .eq('event_id', event.id)
+    .eq('submission_id', submissionId)
+    .maybeSingle()
+
+  if (existingSubmission) {
+    if (existingSubmission.retry_receipt === retryReceipt) {
+      return Response.json({ status: 'accepted', receipt_id: retryReceipt }, { status: 200, headers: corsHeaders })
+    }
+  }
+
+  // Check if this email is already registered by another submission
+  const { data: existingEmail } = await supabase
+    .from('entries')
+    .select('id, retry_receipt, submission_id')
+    .eq('event_id', event.id)
+    .eq('hofstra_email', emailValidation.email)
+    .maybeSingle()
+
+  if (existingEmail) {
+    if (existingEmail.retry_receipt === retryReceipt && existingEmail.submission_id === submissionId) {
+      return Response.json({ status: 'accepted', receipt_id: retryReceipt }, { status: 200, headers: corsHeaders })
+    }
+    // Generic duplicate notification to protect existing entrant privacy
+    return Response.json({ status: 'already_checked_in' }, { status: 200, headers: corsHeaders })
   }
 
   const insertPayload = {
@@ -139,30 +179,31 @@ Deno.serve(async (request) => {
     .maybeSingle()
 
   if (!insertError && inserted) {
-    return Response.json({ status: 'accepted', receipt_id: inserted.retry_receipt }, { status: 200 })
+    return Response.json({ status: 'accepted', receipt_id: inserted.retry_receipt }, { status: 200, headers: corsHeaders })
   }
 
-  const { data: existingSubmission } = await supabase
+  // Handle concurrent insert races
+  const { data: raceSubmission } = await supabase
     .from('entries')
     .select('retry_receipt')
     .eq('event_id', event.id)
     .eq('submission_id', submissionId)
     .maybeSingle()
 
-  if (existingSubmission) {
-    return Response.json({ status: 'duplicate', receipt_id: existingSubmission.retry_receipt }, { status: 200 })
+  if (raceSubmission && raceSubmission.retry_receipt === retryReceipt) {
+    return Response.json({ status: 'accepted', receipt_id: raceSubmission.retry_receipt }, { status: 200, headers: corsHeaders })
   }
 
-  const { data: existingEmail } = await supabase
+  const { data: raceEmail } = await supabase
     .from('entries')
     .select('id')
     .eq('event_id', event.id)
     .eq('hofstra_email', emailValidation.email)
     .maybeSingle()
 
-  if (existingEmail) {
-    return Response.json({ status: 'already_checked_in', receipt_id: retryReceipt }, { status: 200 })
+  if (raceEmail) {
+    return Response.json({ status: 'already_checked_in' }, { status: 200, headers: corsHeaders })
   }
 
-  return Response.json({ status: 'invalid_event' }, { status: 500 })
+  return Response.json({ status: 'invalid_event' }, { status: 500, headers: corsHeaders })
 })

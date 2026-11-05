@@ -81,6 +81,8 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
+    window.sessionStorage.clear()
+    window.sessionStorage.setItem('raffle_host_pin_unlocked', '0828')
   })
 
   it('renders check-in form with visible @hofstra.edu suffix and exact labels', async () => {
@@ -263,8 +265,41 @@ describe('Host Dashboard and Projector Mode', () => {
     expect(await screen.findByText('Scan to Join')).toBeInTheDocument()
     expect(screen.getByText('Winner')).toBeInTheDocument()
     expect(screen.getByText('Waiting for drawing…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument()
 
     // No emails should be displayed in Projector Mode
     expect(screen.queryAllByText(/@hofstra\.edu/)).toHaveLength(0)
+  })
+
+  it('requires Host PIN 0828 to access Host Dashboard and rejects incorrect PIN', async () => {
+    window.sessionStorage.clear()
+    const user = userEvent.setup()
+
+    render(
+      <MemoryRouter initialEntries={['/host']}>
+        <Routes>
+          <Route path="/host" element={<HostDashboard />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('Host Access')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('••••')).toBeInTheDocument()
+
+    // Test incorrect PIN
+    const pinInput = screen.getByPlaceholderText('••••')
+    await user.type(pinInput, '1234')
+    await user.click(screen.getByRole('button', { name: /unlock dashboard/i }))
+
+    expect(await screen.findByText(/incorrect pin/i)).toBeInTheDocument()
+    expect(screen.queryByText('Host Controls')).not.toBeInTheDocument()
+
+    // Test correct PIN 0828
+    await user.clear(pinInput)
+    await user.type(pinInput, '0828')
+    await user.click(screen.getByRole('button', { name: /unlock dashboard/i }))
+
+    expect(await screen.findByText('Host Dashboard')).toBeInTheDocument()
+    expect(screen.getByText('PIN 0828 Authenticated')).toBeInTheDocument()
   })
 })

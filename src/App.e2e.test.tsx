@@ -8,6 +8,8 @@ import { buildAttendanceRows } from './lib/excel'
 describe('End-to-End Cross-Device Wheel & Excel Verification', () => {
   beforeEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
+    sessionStorage.setItem('raffle_host_pin_unlocked', '0828')
     vi.restoreAllMocks()
   })
 

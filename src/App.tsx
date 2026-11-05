@@ -432,6 +432,17 @@ export function AttendeePage() {
 
 export function HostDashboard() {
   const navigate = useNavigate()
+  const HOST_PIN = '0828'
+  const [isPinUnlocked, setIsPinUnlocked] = useState(() => {
+    try {
+      return sessionStorage.getItem('raffle_host_pin_unlocked') === HOST_PIN
+    } catch {
+      return false
+    }
+  })
+  const [pinInput, setPinInput] = useState('')
+  const [pinError, setPinError] = useState<string | null>(null)
+
   const [sessionReady, setSessionReady] = useState(() => !supabase || !isBackendConfigured)
   const [email, setEmail] = useState('')
   const [authMessage, setAuthMessage] = useState<string | null>(null)
@@ -446,6 +457,32 @@ export function HostDashboard() {
   const [exporting, setExporting] = useState(false)
   const [lastWinner, setLastWinner] = useState<string | null>(null)
   const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null
+
+  function handlePinSubmit(e: FormEvent) {
+    e.preventDefault()
+    if (pinInput.trim() === HOST_PIN) {
+      try {
+        sessionStorage.setItem('raffle_host_pin_unlocked', HOST_PIN)
+      } catch {
+        // ignore
+      }
+      setIsPinUnlocked(true)
+      setPinError(null)
+      void refreshEvents()
+    } else {
+      setPinError('Incorrect PIN. Please enter the valid host PIN.')
+    }
+  }
+
+  function handleLock() {
+    try {
+      sessionStorage.removeItem('raffle_host_pin_unlocked')
+    } catch {
+      // ignore
+    }
+    setIsPinUnlocked(false)
+    setPinInput('')
+  }
 
   const refreshEvents = useCallback(async () => {
     if (!supabase) return
@@ -490,19 +527,24 @@ export function HostDashboard() {
   }, [])
 
   useEffect(() => {
-    if (!supabase || !isBackendConfigured) return
+    if (!supabase) return
 
-    supabase.auth.getSession().finally(async () => {
-      await refreshEvents()
+    if (isBackendConfigured) {
+      supabase.auth.getSession().finally(async () => {
+        await refreshEvents()
+        setSessionReady(true)
+      })
+
+      const { data } = supabase.auth.onAuthStateChange(async () => {
+        await refreshEvents()
+        setSessionReady(true)
+      })
+
+      return () => data.subscription.unsubscribe()
+    } else {
+      void refreshEvents()
       setSessionReady(true)
-    })
-
-    const { data } = supabase.auth.onAuthStateChange(async () => {
-      await refreshEvents()
-      setSessionReady(true)
-    })
-
-    return () => data.subscription.unsubscribe()
+    }
   }, [refreshEvents])
 
   useEffect(() => {
@@ -801,10 +843,51 @@ export function HostDashboard() {
     }
   }
 
-  if (!isBackendConfigured) {
+  if (!isPinUnlocked) {
     return (
-      <main className="container narrow">
-        <BackendRequiredMessage />
+      <main className="container narrow host-pin-screen">
+        <div className="panel ipod-card">
+          <div className="ipod-screen-bar">
+            <span>Host Security</span>
+            <span className="ipod-battery-icon" />
+          </div>
+          <div className="ipod-card-content">
+            <div className="ipod-logo-badge"> iPod Host Controls</div>
+            <h2>Host Access</h2>
+            <p className="subtitle">
+              Enter the Host PIN to access event management and private attendance records.
+            </p>
+            <form onSubmit={handlePinSubmit} className="pin-form">
+              <label htmlFor="host-pin-input" className="form-label">
+                Host PIN
+              </label>
+              <input
+                id="host-pin-input"
+                type="password"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={8}
+                value={pinInput}
+                onChange={(e) => {
+                  setPinInput(e.target.value)
+                  setPinError(null)
+                }}
+                placeholder="••••"
+                className="input pin-input"
+                autoFocus
+              />
+              {pinError && <p className="field-error" role="alert">{pinError}</p>}
+              <div className="row" style={{ marginTop: '0.75rem' }}>
+                <button className="button primary full-width" type="submit">
+                  Unlock Dashboard
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <p className="footer-note" style={{ textAlign: 'center', marginTop: '1.5rem' }}>
+          <Link to="/" className="link">← Return to Home</Link>
+        </p>
       </main>
     )
   }
@@ -823,14 +906,19 @@ export function HostDashboard() {
         <div>
           <div className="ipod-status-bar">
             <span className="status-title">Host Controls</span>
-            <span className="status-time">Raffle Admin</span>
+            <span className="status-time">PIN 0828 Authenticated</span>
           </div>
           <h1>Host Dashboard</h1>
           <p className="subtitle">Manage raffle events and attendance records</p>
         </div>
-        <Link className="button secondary" to="/">
-          Home
-        </Link>
+        <div className="row wrap">
+          <button className="button secondary" type="button" onClick={handleLock}>
+            🔒 Lock
+          </button>
+          <Link className="button secondary" to="/">
+            Home
+          </Link>
+        </div>
       </header>
 
       <section className="panel ipod-card">
@@ -1185,6 +1273,47 @@ export function ProjectorModePage() {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [recentAttendee, setRecentAttendee] = useState<string | null>(null)
   const [spinning, setSpinning] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshNotice, setRefreshNotice] = useState<string | null>(null)
+
+  const reloadEntries = useCallback(() => {
+    if (!supabase || !eventId) return
+    void syncAllRemoteCheckIns(eventId).then(() => {
+      if (!supabase) return
+      supabase
+        .from('entries')
+        .select('*')
+        .eq('event_id', eventId)
+        .order('created_at', { ascending: true })
+        .then(({ data }: { data: any }) => {
+          if (data) setEntries(data as EntryRow[])
+        })
+      supabase
+        .from('draws')
+        .select('*')
+        .eq('event_id', eventId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+        .then(({ data }: { data: any }) => {
+          if (data) setDraw(data as DrawRow)
+        })
+    })
+  }, [eventId])
+
+  const handleManualRefresh = async () => {
+    if (!eventId || refreshing) return
+    setRefreshing(true)
+    setRefreshNotice(null)
+    try {
+      await syncAllRemoteCheckIns(eventId)
+      reloadEntries()
+      setRefreshNotice('Refreshed!')
+      setTimeout(() => setRefreshNotice(null), 3000)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   // Load event details and real QR code
   useEffect(() => {
@@ -1210,31 +1339,6 @@ export function ProjectorModePage() {
             .catch(() => setQrDataUrl(null))
         }
       })
-
-    const reloadEntries = () => {
-      if (!supabase) return
-      void syncAllRemoteCheckIns(eventId).then(() => {
-        if (!supabase) return
-        supabase
-          .from('entries')
-          .select('*')
-          .eq('event_id', eventId)
-          .order('created_at', { ascending: true })
-          .then(({ data }: { data: any }) => {
-            if (data) setEntries(data as EntryRow[])
-          })
-        supabase
-          .from('draws')
-          .select('*')
-          .eq('event_id', eventId)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-          .then(({ data }: { data: any }) => {
-            if (data) setDraw(data as DrawRow)
-          })
-      })
-    }
 
     // Initial load
     reloadEntries()
@@ -1378,7 +1482,17 @@ export function ProjectorModePage() {
         </Link>
       </header>
 
-      <div className="row wrap controls-bar">
+      <div className="row wrap controls-bar align-center">
+        <button
+          className="button secondary refresh-btn"
+          type="button"
+          onClick={handleManualRefresh}
+          disabled={refreshing}
+          title="Refresh entries from registration form"
+        >
+          {refreshing ? 'Refreshing…' : '🔄 Refresh'}
+        </button>
+        {refreshNotice && <span className="sync-badge">✓ {refreshNotice}</span>}
         <label className="inline-control">
           <input
             type="checkbox"

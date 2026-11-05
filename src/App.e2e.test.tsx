@@ -11,6 +11,7 @@ describe('End-to-End Cross-Device Wheel & Excel Verification', () => {
     sessionStorage.clear()
     sessionStorage.setItem('raffle_host_pin_unlocked', '0828')
     vi.restoreAllMocks()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
   })
 
   it('updates Projector Mode wheel participants and roster when a phone checks in', async () => {

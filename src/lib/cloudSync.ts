@@ -9,8 +9,40 @@ export const GOOGLE_SHEET_GVIZ =
 const STORAGE_KEY_ENTRIES = 'raffle_mock_entries_v1'
 
 /**
- * Broadcasts a newly submitted attendee check-in across devices in real time.
+ * Broadcasts a clear event across devices in real time.
  */
+export async function broadcastClearEvent(eventId: string, clearedAt: string): Promise<void> {
+  try {
+    if (typeof fetch === 'undefined') return
+    await fetch(NTFY_ENDPOINT, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'clear', event_id: eventId, cleared_at: clearedAt }),
+      headers: {
+        Title: 'Clear Event Entries',
+        Tags: 'wastebasket',
+      },
+    })
+  } catch (err) {
+    console.warn('Clear event broadcast warning:', err)
+  }
+}
+
+/**
+ * Clears cloud sync storage and broadcasts clear signal to other devices.
+ */
+export async function clearEventCloudSync(eventId: string): Promise<void> {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  const nowIso = new Date().toISOString()
+  localStorage.setItem(`raffle_cleared_at_${eventId}`, nowIso)
+
+  const raw = localStorage.getItem(STORAGE_KEY_ENTRIES)
+  const entries: EntryRow[] = raw ? JSON.parse(raw) : []
+  const remaining = entries.filter((e) => e.event_id !== eventId)
+  localStorage.setItem(STORAGE_KEY_ENTRIES, JSON.stringify(remaining))
+  window.dispatchEvent(new Event('raffle_demo_change'))
+
+  await broadcastClearEvent(eventId, nowIso)
+}
 export async function broadcastCheckIn(entry: {
   id: string
   event_id: string
@@ -151,7 +183,18 @@ export function subscribeToLiveCheckIns(onNewEntry: (entry: EntryRow) => void): 
       try {
         const data = JSON.parse(event.data)
         if (data.message) {
-          const entry = JSON.parse(data.message) as EntryRow
+          const parsed = JSON.parse(data.message)
+          if (parsed.action === 'clear' && parsed.event_id) {
+            localStorage.setItem(`raffle_cleared_at_${parsed.event_id}`, parsed.cleared_at)
+            const raw = localStorage.getItem(STORAGE_KEY_ENTRIES)
+            const entries: EntryRow[] = raw ? JSON.parse(raw) : []
+            const remaining = entries.filter((e) => e.event_id !== parsed.event_id)
+            localStorage.setItem(STORAGE_KEY_ENTRIES, JSON.stringify(remaining))
+            window.dispatchEvent(new Event('raffle_demo_change'))
+            return
+          }
+
+          const entry = parsed as EntryRow
           if (entry.first_name && entry.hofstra_email) {
             syncIncomingEntry(entry)
             onNewEntry(entry)
@@ -176,6 +219,15 @@ export function subscribeToLiveCheckIns(onNewEntry: (entry: EntryRow) => void): 
 export function syncIncomingEntry(entry: EntryRow): boolean {
   if (typeof window === 'undefined' || !window.localStorage) return false
   try {
+    const clearedAt = localStorage.getItem(`raffle_cleared_at_${entry.event_id}`)
+    if (clearedAt) {
+      const entryTime = new Date(entry.checked_in_at || entry.created_at || 0).getTime()
+      const clearTime = new Date(clearedAt).getTime()
+      if (entryTime <= clearTime) {
+        return false
+      }
+    }
+
     const raw = localStorage.getItem(STORAGE_KEY_ENTRIES)
     const entries: EntryRow[] = raw ? JSON.parse(raw) : []
     const normalizedEmail = entry.hofstra_email.toLowerCase().trim()
@@ -225,6 +277,15 @@ export async function syncAllRemoteCheckIns(eventId = 'evt-nasa-2026'): Promise<
 
     for (const inbound of allInbound) {
       const targetEvent = inbound.event_id || eventId
+      const clearedAt = localStorage.getItem(`raffle_cleared_at_${targetEvent}`)
+      if (clearedAt) {
+        const inboundTime = new Date(inbound.checked_in_at || inbound.created_at || 0).getTime()
+        const clearTime = new Date(clearedAt).getTime()
+        if (inboundTime <= clearTime) {
+          continue
+        }
+      }
+
       const normalizedEmail = inbound.hofstra_email.toLowerCase().trim()
       const exists = localEntries.some(
         (e) =>

@@ -250,6 +250,7 @@ describe('Host Dashboard and Projector Mode', () => {
 
     expect(await screen.findByText('Host Dashboard')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /create event/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /delete all/i })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /download excel/i }).length).toBeGreaterThanOrEqual(1)
   })
 

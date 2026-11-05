@@ -26,6 +26,7 @@ import {
 import { isBackendConfigured, isLiveBackendConfigured } from './lib/env'
 import { findDuplicateNameIds } from './lib/duplicates'
 import {
+  clearEventCloudSync,
   subscribeToLiveCheckIns,
   syncAllRemoteCheckIns,
   syncIncomingEntry,
@@ -669,6 +670,21 @@ export function HostDashboard() {
     await refreshEventDetails(selectedEventId)
   }
 
+  async function onDeleteAllEntries() {
+    if (!selectedEventId) return
+    if (
+      !window.confirm(
+        'Delete ALL attendee records for this event? This will clear the attendance list and reset the spinning wheel so you can start fresh.',
+      )
+    ) {
+      return
+    }
+
+    await clearEventCloudSync(selectedEventId)
+    await clearEntries(selectedEventId)
+    await refreshEventDetails(selectedEventId)
+  }
+
   async function onDeleteEntry(entryId: string) {
     if (!selectedEventId) return
     if (window.confirm('Permanently delete this attendee record? This cannot be undone.')) {
@@ -1194,14 +1210,24 @@ export function HostDashboard() {
             <div className="ipod-card-content">
               <div className="section-header-row">
                 <h2>Attendance & Participants ({entries.length})</h2>
-                <button
-                  className="button secondary"
-                  type="button"
-                  onClick={onDownloadExcel}
-                  disabled={exporting}
-                >
-                  {exporting ? 'Exporting…' : 'Download Excel (.xlsx)'}
-                </button>
+                <div className="row wrap">
+                  <button
+                    className="button danger"
+                    type="button"
+                    onClick={onDeleteAllEntries}
+                    disabled={entries.length === 0}
+                  >
+                    Delete All
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={onDownloadExcel}
+                    disabled={exporting}
+                  >
+                    {exporting ? 'Exporting…' : 'Download Excel (.xlsx)'}
+                  </button>
+                </div>
               </div>
               <input
                 className="search-input"

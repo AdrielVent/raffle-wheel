@@ -1,11 +1,12 @@
 import { createClient } from '@supabase/supabase-js'
-import { isBackendConfigured, supabaseAnonKey, supabaseUrl } from './env'
+import { isLiveBackendConfigured, supabaseAnonKey, supabaseUrl } from './env'
+import { createMockSupabaseClient } from './mockBackend'
 
-export const supabase = isBackendConfigured
+export const supabase = isLiveBackendConfigured
   ? createClient(supabaseUrl!, supabaseAnonKey!, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
       },
     })
-  : null
+  : createMockSupabaseClient()

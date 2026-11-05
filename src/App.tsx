@@ -23,7 +23,7 @@ import {
   setRegistration,
   submitEntry,
 } from './lib/api'
-import { isBackendConfigured } from './lib/env'
+import { isBackendConfigured, isLiveBackendConfigured } from './lib/env'
 import { findDuplicateNameIds } from './lib/duplicates'
 import { downloadAttendanceExcel } from './lib/excel'
 import { getPreferenceKey, getReceiptKey } from './lib/storage'
@@ -94,7 +94,34 @@ function HomePage() {
         <h1>QR Raffle Wheel</h1>
         <p className="subtitle">Event check-in and server-authoritative raffle drawings</p>
       </header>
-      {!isBackendConfigured && <BackendRequiredMessage />}
+
+      {!isLiveBackendConfigured && (
+        <section className="panel ipod-card">
+          <div className="ipod-screen-bar">
+            <span>Test Mode Active</span>
+            <span className="ipod-battery-icon" />
+          </div>
+          <div className="ipod-card-content">
+            <h2>Interactive Test Mode</h2>
+            <p className="subtitle">
+              Running with in-browser persistence. Test the complete attendee check-in, confirmation
+              screen, host dashboard, and live raffle wheel immediately.
+            </p>
+            <div className="row wrap">
+              <Link className="button" to="/e/nasa-space-apps">
+                Test Attendee Check-In
+              </Link>
+              <Link className="button secondary" to="/host">
+                Host Dashboard
+              </Link>
+              <Link className="button secondary" to="/host/projector/evt-nasa-2026">
+                Projector Wheel
+              </Link>
+            </div>
+          </div>
+        </section>
+      )}
+
       <section className="panel ipod-card">
         <div className="ipod-screen-bar">
           <span>Host Navigation</span>
@@ -971,7 +998,7 @@ export function ProjectorModePage() {
       .select('*')
       .eq('id', eventId)
       .maybeSingle()
-      .then(({ data }) => {
+      .then(({ data }: { data: any }) => {
         if (data) {
           const loaded = data as EventRow
           setEventData(loaded)
@@ -993,7 +1020,7 @@ export function ProjectorModePage() {
       .select('*')
       .eq('event_id', eventId)
       .order('created_at', { ascending: true })
-      .then(({ data }) => {
+      .then(({ data }: { data: any }) => {
         if (data) setEntries(data as EntryRow[])
       })
 
@@ -1005,7 +1032,7 @@ export function ProjectorModePage() {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle()
-      .then(({ data }) => {
+      .then(({ data }: { data: any }) => {
         if (data) setDraw(data as DrawRow)
       })
 
@@ -1015,7 +1042,7 @@ export function ProjectorModePage() {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'draws', filter: `event_id=eq.${eventId}` },
-        (payload) => {
+        (payload: any) => {
           setDraw(payload.new as DrawRow)
         },
       )
@@ -1029,7 +1056,7 @@ export function ProjectorModePage() {
             .select('*')
             .eq('event_id', eventId)
             .order('created_at', { ascending: true })
-            .then(({ data }) => {
+            .then(({ data }: { data: any }) => {
               if (data) setEntries(data as EntryRow[])
             })
         },

@@ -311,6 +311,26 @@ export function AttendeePage() {
               <span className="event-tag">Event</span>
               <span className="event-title-context">{confirmed.eventName}</span>
             </div>
+            <div className="row wrap" style={{ marginTop: '0.75rem', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => {
+                  setConfirmed(null)
+                  setFirstName('')
+                  setLastName('')
+                  setHofstraUsername('')
+                }}
+              >
+                Register Another Attendee
+              </button>
+              <Link className="button secondary" to="/">
+                Home
+              </Link>
+              <Link className="button" to="/host">
+                Host Dashboard
+              </Link>
+            </div>
           </div>
         </div>
       </main>
@@ -510,9 +530,17 @@ export function HostDashboard() {
       refreshEventDetails(selectedEventId)
     }, 5000)
 
+    const handleSync = () => {
+      refreshEventDetails(selectedEventId)
+    }
+    window.addEventListener('storage', handleSync)
+    window.addEventListener('raffle_demo_change', handleSync)
+
     return () => {
       channel.unsubscribe()
       clearInterval(interval)
+      window.removeEventListener('storage', handleSync)
+      window.removeEventListener('raffle_demo_change', handleSync)
     }
   }, [selectedEventId, refreshEventDetails])
 
@@ -609,6 +637,124 @@ export function HostDashboard() {
       alert(`Excel export failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     } finally {
       setExporting(false)
+    }
+  }
+
+  const GOOGLE_SHEET_EDIT_URL =
+    'https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/edit?usp=sharing'
+  const GOOGLE_SHEET_GVIZ_URL =
+    'https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/gviz/tq?tqx=out:json'
+
+  const [sheetSyncing, setSheetSyncing] = useState(false)
+  const [sheetNotice, setSheetNotice] = useState<string | null>(null)
+
+  async function onCopyForGoogleSheet() {
+    if (!selectedEvent) return
+    let exportList = entries
+    if (supabase) {
+      const { data } = await supabase
+        .from('entries')
+        .select('*')
+        .eq('event_id', selectedEvent.id)
+        .order('created_at', { ascending: true })
+      if (data) exportList = data as EntryRow[]
+    }
+
+    const lines = [
+      ['Event', 'First Name', 'Last Name', 'Hofstra Email', 'Check-in Time (UTC)'].join('\t'),
+      ...exportList.map((e) =>
+        [
+          selectedEvent.name,
+          e.first_name,
+          e.last_name,
+          e.hofstra_email,
+          e.checked_in_at ? new Date(e.checked_in_at).toISOString() : new Date().toISOString(),
+        ].join('\t'),
+      ),
+    ]
+
+    await navigator.clipboard.writeText(lines.join('\n'))
+    setSheetNotice('Copied table data to clipboard! You can paste directly into the Google Sheet.')
+    setTimeout(() => setSheetNotice(null), 5000)
+  }
+
+  async function onSyncFromGoogleSheet() {
+    if (!selectedEvent) return
+    setSheetSyncing(true)
+    setSheetNotice(null)
+    try {
+      const res = await fetch(GOOGLE_SHEET_GVIZ_URL)
+      const text = await res.text()
+      const jsonStr = text.replace(/^[^{]*/, '').replace(/[^}]*$/, '')
+      const data = JSON.parse(jsonStr)
+      const rows = data?.table?.rows ?? []
+
+      let imported = 0
+      for (const row of rows) {
+        const c = row.c ?? []
+        const v0 = c[0]?.v ? String(c[0].v).trim() : ''
+        const v1 = c[1]?.v ? String(c[1].v).trim() : ''
+        const v2 = c[2]?.v ? String(c[2].v).trim() : ''
+        const v3 = c[3]?.v ? String(c[3].v).trim() : ''
+
+        if (
+          v0.toLowerCase() === 'event' ||
+          v0.toLowerCase() === 'first name' ||
+          v1.toLowerCase() === 'first name'
+        ) {
+          continue
+        }
+
+        let first = ''
+        let last = ''
+        let email = ''
+
+        if (v3) {
+          first = v1
+          last = v2
+          email = v3
+        } else if (v2) {
+          first = v0
+          last = v1
+          email = v2
+        } else if (v1) {
+          const parts = v0.split(/\s+/)
+          first = parts[0] || 'Attendee'
+          last = parts.slice(1).join(' ') || 'Guest'
+          email = v1
+        }
+
+        if (first && email) {
+          const emailVal = normalizeHofstraUsername(email)
+          const username = emailVal.ok ? emailVal.username : email.split('@')[0]
+          try {
+            await submitEntry(
+              selectedEvent.slug,
+              first,
+              last || 'Guest',
+              username,
+              crypto.randomUUID(),
+              crypto.randomUUID(),
+            )
+            imported++
+          } catch {
+            // skip duplicates
+          }
+        }
+      }
+      await refreshEventDetails(selectedEvent.id)
+      setSheetNotice(
+        imported > 0
+          ? `Synced ${imported} attendee(s) from Google Sheet!`
+          : 'Google Sheet is currently empty or attendees are already registered.',
+      )
+    } catch (err) {
+      setSheetNotice(
+        `Failed to read Google Sheet: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      )
+    } finally {
+      setSheetSyncing(false)
+      setTimeout(() => setSheetNotice(null), 5000)
     }
   }
 
@@ -779,7 +925,31 @@ export function HostDashboard() {
                   >
                     {exporting ? 'Exporting…' : 'Download Excel'}
                   </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={onSyncFromGoogleSheet}
+                    disabled={sheetSyncing}
+                  >
+                    {sheetSyncing ? 'Syncing…' : 'Sync Google Sheet'}
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={onCopyForGoogleSheet}
+                  >
+                    Copy for Sheet
+                  </button>
+                  <a
+                    className="button secondary"
+                    href={GOOGLE_SHEET_EDIT_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open Google Sheet
+                  </a>
                 </div>
+                {sheetNotice && <p className="status-note">{sheetNotice}</p>}
               </div>
             </div>
             <div className="qr-wrap">
@@ -1063,8 +1233,37 @@ export function ProjectorModePage() {
       )
       .subscribe()
 
+    const reloadEntries = () => {
+      if (!supabase) return
+      supabase
+        .from('entries')
+        .select('*')
+        .eq('event_id', eventId)
+        .order('created_at', { ascending: true })
+        .then(({ data }: { data: any }) => {
+          if (data) setEntries(data as EntryRow[])
+        })
+      supabase
+        .from('draws')
+        .select('*')
+        .eq('event_id', eventId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+        .then(({ data }: { data: any }) => {
+          if (data) setDraw(data as DrawRow)
+        })
+    }
+
+    const interval = setInterval(reloadEntries, 2000)
+    window.addEventListener('storage', reloadEntries)
+    window.addEventListener('raffle_demo_change', reloadEntries)
+
     return () => {
       channel.unsubscribe()
+      clearInterval(interval)
+      window.removeEventListener('storage', reloadEntries)
+      window.removeEventListener('raffle_demo_change', reloadEntries)
     }
   }, [eventId])
 

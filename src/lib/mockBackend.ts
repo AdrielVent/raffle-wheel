@@ -120,12 +120,19 @@ function setStored<T>(key: string, value: T): void {
   }
 }
 
-const listeners: Array<() => void> = []
+const listeners: Array<(payload?: any) => void> = []
 
-function notifyListeners() {
+function notifyListeners(payload?: any) {
   for (const fn of listeners) {
     try {
-      fn()
+      fn(payload)
+    } catch {
+      // ignore
+    }
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new Event('raffle_demo_change'))
     } catch {
       // ignore
     }
@@ -163,9 +170,9 @@ export function createMockSupabaseClient(): any {
   function getDraws(): MockDrawRow[] {
     return getStored<MockDrawRow[]>(STORAGE_KEY_DRAWS, [])
   }
-  function setDraws(draws: MockDrawRow[]) {
+  function setDraws(draws: MockDrawRow[], newDraw?: MockDrawRow) {
     setStored(STORAGE_KEY_DRAWS, draws)
-    notifyListeners()
+    notifyListeners({ new: newDraw })
   }
 
   function createQuery(data: any[]) {
@@ -227,28 +234,24 @@ export function createMockSupabaseClient(): any {
       return createQuery([])
     },
 
-    channel: () => {
-      let subCb: (() => void) | null = null
-      return {
-        on: (_evt: string, _filter: any, cb: () => void) => {
-          subCb = cb
+    channel: (name: string) => {
+      const channelListeners: Array<(payload?: any) => void> = []
+      const channelObj: any = {
+        name,
+        on: (_evt: string, _filter: any, cb: (payload?: any) => void) => {
+          channelListeners.push(cb)
           listeners.push(cb)
-          return {
-            subscribe: () => ({
-              unsubscribe: () => {
-                if (subCb) {
-                  const idx = listeners.indexOf(subCb)
-                  if (idx !== -1) listeners.splice(idx, 1)
-                }
-              },
-            }),
+          return channelObj
+        },
+        subscribe: () => channelObj,
+        unsubscribe: () => {
+          for (const cb of channelListeners) {
+            const idx = listeners.indexOf(cb)
+            if (idx !== -1) listeners.splice(idx, 1)
           }
         },
-        subscribe: () => ({
-          unsubscribe: () => {},
-        }),
-        unsubscribe: () => {},
       }
+      return channelObj
     },
 
     functions: {
@@ -426,7 +429,7 @@ export function createMockSupabaseClient(): any {
           created_at: new Date().toISOString(),
         }
         draws.unshift(newDraw)
-        setDraws(draws)
+        setDraws(draws, newDraw)
 
         return {
           data: {

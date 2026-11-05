@@ -68,11 +68,17 @@ export type DrawRow = {
 function BackendRequiredMessage() {
   return (
     <div className="panel ipod-card">
-      <h2>Backend setup required</h2>
-      <p>
-        This app is intentionally disabled until Supabase credentials are configured.
-        Set <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code>.
-      </p>
+      <div className="ipod-screen-bar">
+        <span>System Alert</span>
+        <span className="ipod-battery-icon" />
+      </div>
+      <div className="ipod-card-content">
+        <h2>Backend Setup Required</h2>
+        <p>
+          This app is intentionally disabled until Supabase credentials are configured.
+          Set <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code>.
+        </p>
+      </div>
     </div>
   )
 }
@@ -81,17 +87,27 @@ function HomePage() {
   return (
     <main className="container narrow">
       <header className="page-header">
+        <div className="ipod-status-bar">
+          <span className="status-title">QR Raffle Wheel</span>
+          <span className="status-time">NASA Event</span>
+        </div>
         <h1>QR Raffle Wheel</h1>
         <p className="subtitle">Event check-in and server-authoritative raffle drawings</p>
       </header>
       {!isBackendConfigured && <BackendRequiredMessage />}
       <section className="panel ipod-card">
-        <h2>Host Controls</h2>
-        <p>Manage events, download attendance workbooks, and run fair raffle drawings.</p>
-        <div className="actions">
-          <Link className="button" to="/host">
-            Host Dashboard
-          </Link>
+        <div className="ipod-screen-bar">
+          <span>Host Navigation</span>
+          <span className="ipod-battery-icon" />
+        </div>
+        <div className="ipod-card-content">
+          <h2>Host Controls</h2>
+          <p>Manage events, download attendance workbooks, and run fair raffle drawings.</p>
+          <div className="actions">
+            <Link className="button" to="/host">
+              Host Dashboard
+            </Link>
+          </div>
         </div>
       </section>
     </main>
@@ -245,21 +261,32 @@ export function AttendeePage() {
     return (
       <main className="container narrow confirmation-screen">
         <div className="panel ipod-card confirmation-card">
-          <h1 ref={headingRef} tabIndex={-1} className="confirmation-heading">
-            Thank you for attending the NASA event!
-          </h1>
-          <p className="confirmation-greeting">
-            You’re checked in, {confirmed.firstName}, and entered into the raffle.
-          </p>
-          <p className="confirmation-instruction">
-            Watch the main screen for the drawing.
-          </p>
-          <p className="confirmation-dismiss">
-            You can close this page.
-          </p>
-          <div className="confirmation-secondary">
-            <span className="event-tag">Event</span>
-            <span className="event-title-context">{confirmed.eventName}</span>
+          <div className="ipod-screen-bar">
+            <span>NASA Check-In</span>
+            <span className="ipod-battery-icon" />
+          </div>
+          <div className="ipod-card-content confirmation-body">
+            <div className="confirmation-badge" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0071e3" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+            <h1 ref={headingRef} tabIndex={-1} className="confirmation-heading">
+              Thank you for attending the NASA event!
+            </h1>
+            <p className="confirmation-greeting">
+              You’re checked in, {confirmed.firstName}, and entered into the raffle.
+            </p>
+            <p className="confirmation-instruction">
+              Watch the main screen for the drawing.
+            </p>
+            <p className="confirmation-dismiss">
+              You can close this page.
+            </p>
+            <div className="confirmation-secondary">
+              <span className="event-tag">Event</span>
+              <span className="event-title-context">{confirmed.eventName}</span>
+            </div>
           </div>
         </div>
       </main>
@@ -272,6 +299,10 @@ export function AttendeePage() {
   return (
     <main className="container narrow">
       <header className="page-header">
+        <div className="ipod-status-bar">
+          <span className="status-title">Event Check-In</span>
+          <span className="status-time">Hofstra</span>
+        </div>
         <h1>{eventState?.name ?? 'Event Check-In'}</h1>
         <p className="subtitle">Enter your name and Hofstra email to check in and join the raffle</p>
       </header>
@@ -283,61 +314,67 @@ export function AttendeePage() {
       )}
       {isEnded && <p className="state-banner warning">This raffle is over. Thanks for joining!</p>}
 
-      <form onSubmit={onSubmit} className="panel ipod-card" aria-disabled={submitDisabled}>
-        <label>
-          First name
-          <input
-            type="text"
-            value={firstName}
-            onChange={(e) => setFirstName(e.target.value)}
-            maxLength={100}
-            autoComplete="given-name"
-            required
-            disabled={submitting}
-          />
-        </label>
-
-        <label>
-          Last name
-          <input
-            type="text"
-            value={lastName}
-            onChange={(e) => setLastName(e.target.value)}
-            maxLength={100}
-            autoComplete="family-name"
-            required
-            disabled={submitting}
-          />
-        </label>
-
-        <label>
-          Hofstra email for check-in
-          <div className="input-with-suffix">
+      <div className="panel ipod-card">
+        <div className="ipod-screen-bar">
+          <span>Registration Form</span>
+          <span className="ipod-battery-icon" />
+        </div>
+        <form onSubmit={onSubmit} className="ipod-card-content" aria-disabled={submitDisabled}>
+          <label>
+            First name
             <input
               type="text"
-              value={hofstraUsername}
-              onChange={(e) => handleUsernameChange(e.target.value)}
-              autoComplete="email"
-              placeholder="aventura2"
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value)}
+              maxLength={100}
+              autoComplete="given-name"
               required
               disabled={submitting}
             />
-            <span className="email-suffix">@hofstra.edu</span>
-          </div>
-          <small className="helper-text">Enter the part before @hofstra.edu.</small>
-          {usernameError && <small className="error-text">{usernameError}</small>}
-        </label>
+          </label>
 
-        <button className="button primary-action" type="submit" disabled={submitDisabled}>
-          {submitting ? 'Checking in…' : 'Check In & Join Raffle'}
-        </button>
+          <label>
+            Last name
+            <input
+              type="text"
+              value={lastName}
+              onChange={(e) => setLastName(e.target.value)}
+              maxLength={100}
+              autoComplete="family-name"
+              required
+              disabled={submitting}
+            />
+          </label>
 
-        <p className="privacy-note">
-          Privacy: First and last names plus Hofstra email addresses are collected for event check-in
-          and raffle administration. Only winning names may be displayed publicly. Email addresses
-          are self-reported and not verified.
-        </p>
-      </form>
+          <label>
+            Hofstra email for check-in
+            <div className="input-with-suffix">
+              <input
+                type="text"
+                value={hofstraUsername}
+                onChange={(e) => handleUsernameChange(e.target.value)}
+                autoComplete="email"
+                placeholder="aventura2"
+                required
+                disabled={submitting}
+              />
+              <span className="email-suffix">@hofstra.edu</span>
+            </div>
+            <small className="helper-text">Enter the part before @hofstra.edu.</small>
+            {usernameError && <small className="error-text">{usernameError}</small>}
+          </label>
+
+          <button className="button primary-action" type="submit" disabled={submitDisabled}>
+            {submitting ? 'Checking in…' : 'Check In & Join Raffle'}
+          </button>
+
+          <p className="privacy-note">
+            Privacy: First and last names plus Hofstra email addresses are collected for event check-in
+            and raffle administration. Only winning names may be displayed publicly. Email addresses
+            are self-reported and not verified.
+          </p>
+        </form>
+      </div>
 
       {error && <p className="state-banner error">{error}</p>}
     </main>
@@ -489,7 +526,7 @@ export function HostDashboard() {
       width: 280,
       errorCorrectionLevel: 'H',
       color: {
-        dark: '#1d1d1f',
+        dark: '#1c1c1e',
         light: '#ffffff',
       },
     })
@@ -602,6 +639,10 @@ export function HostDashboard() {
     <main className="container host-layout">
       <header className="host-header">
         <div>
+          <div className="ipod-status-bar">
+            <span className="status-title">Host Controls</span>
+            <span className="status-time">Raffle Admin</span>
+          </div>
           <h1>Host Dashboard</h1>
           <p className="subtitle">Manage raffle events and attendance records</p>
         </div>
@@ -611,96 +652,120 @@ export function HostDashboard() {
       </header>
 
       <section className="panel ipod-card">
-        <h2>Host Authentication</h2>
-        <div className="row wrap">
-          <input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            type="email"
-            placeholder="host@example.edu"
-          />
-          <button className="button" type="button" onClick={onSignIn}>
-            Send Sign-In Link
-          </button>
-          <button className="button secondary" type="button" onClick={onSignOut}>
-            Sign Out
-          </button>
+        <div className="ipod-screen-bar">
+          <span>Host Authentication</span>
+          <span className="ipod-battery-icon" />
         </div>
-        {authMessage && <p className="status-note">{authMessage}</p>}
-      </section>
-
-      <section className="panel ipod-card">
-        <h2>Create Event</h2>
-        <form className="row wrap" onSubmit={onCreateEvent}>
-          <input
-            value={newEventName}
-            onChange={(e) => setNewEventName(e.target.value)}
-            placeholder="Event Name (e.g. NASA Tech Expo)"
-            required
-          />
-          <button className="button" type="submit">
-            Create Event
-          </button>
-        </form>
-      </section>
-
-      <section className="panel ipod-card">
-        <h2>Your Events</h2>
-        {events.length === 0 ? (
-          <p className="empty-text">No events created yet.</p>
-        ) : (
-          <div className="event-grid">
-            {events.map((event) => (
-              <button
-                key={event.id}
-                className={`event-card ${selectedEventId === event.id ? 'active' : ''}`}
-                onClick={() => setSelectedEventId(event.id)}
-                type="button"
-              >
-                <strong>{event.name}</strong>
-                <span className={`status-badge status-${event.status}`}>{event.status}</span>
-              </button>
-            ))}
+        <div className="ipod-card-content">
+          <h2>Host Authentication</h2>
+          <div className="row wrap">
+            <input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
+              placeholder="host@example.edu"
+            />
+            <button className="button" type="button" onClick={onSignIn}>
+              Send Sign-In Link
+            </button>
+            <button className="button secondary" type="button" onClick={onSignOut}>
+              Sign Out
+            </button>
           </div>
-        )}
+          {authMessage && <p className="status-note">{authMessage}</p>}
+        </div>
+      </section>
+
+      <section className="panel ipod-card">
+        <div className="ipod-screen-bar">
+          <span>New Event</span>
+          <span className="ipod-battery-icon" />
+        </div>
+        <div className="ipod-card-content">
+          <h2>Create Event</h2>
+          <form className="row wrap" onSubmit={onCreateEvent}>
+            <input
+              value={newEventName}
+              onChange={(e) => setNewEventName(e.target.value)}
+              placeholder="Event Name (e.g. NASA Tech Expo)"
+              required
+            />
+            <button className="button" type="submit">
+              Create Event
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <section className="panel ipod-card">
+        <div className="ipod-screen-bar">
+          <span>Event Library</span>
+          <span className="ipod-battery-icon" />
+        </div>
+        <div className="ipod-card-content">
+          <h2>Your Events</h2>
+          {events.length === 0 ? (
+            <p className="empty-text">No events created yet.</p>
+          ) : (
+            <div className="event-grid">
+              {events.map((event) => (
+                <button
+                  key={event.id}
+                  className={`event-card ${selectedEventId === event.id ? 'active' : ''}`}
+                  onClick={() => setSelectedEventId(event.id)}
+                  type="button"
+                >
+                  <strong>{event.name}</strong>
+                  <span className={`status-badge status-${event.status}`}>{event.status}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
 
       {selectedEvent && (
         <>
           <section className="panel ipod-card two-col">
             <div>
-              <h2>Entry Link & QR Code</h2>
-              <p className="mono-link">{entryLink}</p>
-              <div className="row wrap">
-                <button
-                  className="button"
-                  type="button"
-                  onClick={() => navigator.clipboard.writeText(entryLink)}
-                >
-                  Copy Link
-                </button>
-                <a
-                  className="button secondary"
-                  href={qrDataUrl ?? '#'}
-                  download={`${selectedEvent.slug}-qr.png`}
-                >
-                  Download QR
-                </a>
-                <button
-                  className="button secondary"
-                  type="button"
-                  onClick={() => navigate(`/host/projector/${selectedEvent.id}`)}
-                >
-                  Projector Mode
-                </button>
-                <button
-                  className="button export-action"
-                  type="button"
-                  onClick={onDownloadExcel}
-                  disabled={exporting}
-                >
-                  {exporting ? 'Exporting…' : 'Download Excel'}
-                </button>
+              <div className="ipod-screen-bar">
+                <span>Event Entry & QR</span>
+                <span className="ipod-battery-icon" />
+              </div>
+              <div className="ipod-card-content">
+                <h2>Entry Link & QR Code</h2>
+                <p className="mono-link">{entryLink}</p>
+                <div className="row wrap">
+                  <button
+                    className="button"
+                    type="button"
+                    onClick={() => navigator.clipboard.writeText(entryLink)}
+                  >
+                    Copy Link
+                  </button>
+                  <a
+                    className="button secondary"
+                    href={qrDataUrl ?? '#'}
+                    download={`${selectedEvent.slug}-qr.png`}
+                  >
+                    Download QR
+                  </a>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => navigate(`/host/projector/${selectedEvent.id}`)}
+                  >
+                    Projector Mode
+                  </button>
+                  <button
+                    className="button export-action"
+                    type="button"
+                    onClick={onDownloadExcel}
+                    disabled={exporting}
+                  >
+                    {exporting ? 'Exporting…' : 'Download Excel'}
+                  </button>
+                </div>
               </div>
             </div>
             <div className="qr-wrap">
@@ -709,171 +774,189 @@ export function HostDashboard() {
           </section>
 
           <section className="panel ipod-card">
-            <h2>Event Controls</h2>
-            <div className="row wrap">
-              <button
-                className="button"
-                type="button"
-                onClick={() => setRegistration(selectedEvent.id, true)}
-              >
-                Open Registration
-              </button>
-              <button
-                className="button secondary"
-                type="button"
-                onClick={() => setRegistration(selectedEvent.id, false)}
-              >
-                Close Registration
-              </button>
-              <button
-                className="button secondary"
-                type="button"
-                onClick={() => endEvent(selectedEvent.id)}
-              >
-                End Event
-              </button>
-              <button
-                className="button danger"
-                type="button"
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      'Clear all entries for this event? All attendance records will be removed.',
-                    )
-                  ) {
-                    clearEntries(selectedEvent.id).then(() => refreshEventDetails(selectedEvent.id))
-                  }
-                }}
-              >
-                Clear Entries
-              </button>
-              <button
-                className="button danger"
-                type="button"
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      'Delete this event and all its data? This action cannot be undone.',
-                    )
-                  ) {
-                    deleteEventData(selectedEvent.id).then(() => {
-                      setSelectedEventId(null)
-                      refreshEvents()
-                    })
-                  }
-                }}
-              >
-                Delete Event Data
-              </button>
+            <div className="ipod-screen-bar">
+              <span>Event State & Lifecycle</span>
+              <span className="ipod-battery-icon" />
+            </div>
+            <div className="ipod-card-content">
+              <h2>Event Controls</h2>
+              <div className="row wrap">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => setRegistration(selectedEvent.id, true)}
+                >
+                  Open Registration
+                </button>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={() => setRegistration(selectedEvent.id, false)}
+                >
+                  Close Registration
+                </button>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={() => endEvent(selectedEvent.id)}
+                >
+                  End Event
+                </button>
+                <button
+                  className="button danger"
+                  type="button"
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        'Clear all entries for this event? All attendance records will be removed.',
+                      )
+                    ) {
+                      clearEntries(selectedEvent.id).then(() => refreshEventDetails(selectedEvent.id))
+                    }
+                  }}
+                >
+                  Clear Entries
+                </button>
+                <button
+                  className="button danger"
+                  type="button"
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        'Delete this event and all its data? This action cannot be undone.',
+                      )
+                    ) {
+                      deleteEventData(selectedEvent.id).then(() => {
+                        setSelectedEventId(null)
+                        refreshEvents()
+                      })
+                    }
+                  }}
+                >
+                  Delete Event Data
+                </button>
+              </div>
             </div>
           </section>
 
           <section className="panel ipod-card">
-            <h2>Raffle Drawing</h2>
-            <div className="row wrap">
-              <label className="inline-control">
-                <input
-                  type="checkbox"
-                  checked={removeWinners}
-                  onChange={(e) => {
-                    setRemoveWinners(e.target.checked)
-                    localStorage.setItem(
-                      getPreferenceKey(selectedEvent.id, 'removeWinners'),
-                      e.target.checked ? '1' : '0',
-                    )
-                  }}
-                />
-                Remove winners from future draws
-              </label>
-              <button className="button primary-action" type="button" onClick={onDraw} disabled={drawing}>
-                {drawing ? 'Drawing…' : 'Run Draw'}
-              </button>
+            <div className="ipod-screen-bar">
+              <span>Drawing Controls</span>
+              <span className="ipod-battery-icon" />
             </div>
-            {lastWinner && <p className="winner-callout">{lastWinner}</p>}
-            <div className="draw-history">
-              <h3>Drawing History</h3>
-              {draws.length === 0 ? (
-                <p className="empty-text">No drawings conducted yet.</p>
+            <div className="ipod-card-content">
+              <h2>Raffle Drawing</h2>
+              <div className="row wrap">
+                <label className="inline-control">
+                  <input
+                    type="checkbox"
+                    checked={removeWinners}
+                    onChange={(e) => {
+                      setRemoveWinners(e.target.checked)
+                      localStorage.setItem(
+                        getPreferenceKey(selectedEvent.id, 'removeWinners'),
+                        e.target.checked ? '1' : '0',
+                      )
+                    }}
+                  />
+                  Remove winners from future draws
+                </label>
+                <button className="button primary-action" type="button" onClick={onDraw} disabled={drawing}>
+                  {drawing ? 'Drawing…' : 'Run Draw'}
+                </button>
+              </div>
+              {lastWinner && <p className="winner-callout">{lastWinner}</p>}
+              <div className="draw-history">
+                <h3>Drawing History</h3>
+                {draws.length === 0 ? (
+                  <p className="empty-text">No drawings conducted yet.</p>
+                ) : (
+                  <ol className="draw-list">
+                    {draws.map((draw) => (
+                      <li key={draw.id}>
+                        <span className="draw-time">{new Date(draw.created_at).toLocaleString()}</span>
+                        <strong className="draw-winner">
+                          {draw.winner_first_name
+                            ? `${draw.winner_first_name} ${draw.winner_last_name}`
+                            : 'No eligible winner'}
+                        </strong>
+                        {draw.remove_winner && <em className="tag-removed">removed from future</em>}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+            </div>
+          </section>
+
+          <section className="panel ipod-card">
+            <div className="ipod-screen-bar">
+              <span>Attendance Records</span>
+              <span className="ipod-battery-icon" />
+            </div>
+            <div className="ipod-card-content">
+              <div className="section-header-row">
+                <h2>Attendance & Participants ({entries.length})</h2>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={onDownloadExcel}
+                  disabled={exporting}
+                >
+                  {exporting ? 'Exporting…' : 'Download Excel (.xlsx)'}
+                </button>
+              </div>
+              <input
+                className="search-input"
+                placeholder="Search by name or Hofstra email…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              {filteredEntries.length === 0 ? (
+                <p className="empty-text">No participants match the search.</p>
               ) : (
-                <ol className="draw-list">
-                  {draws.map((draw) => (
-                    <li key={draw.id}>
-                      <span className="draw-time">{new Date(draw.created_at).toLocaleString()}</span>
-                      <strong className="draw-winner">
-                        {draw.winner_first_name
-                          ? `${draw.winner_first_name} ${draw.winner_last_name}`
-                          : 'No eligible winner'}
-                      </strong>
-                      {draw.remove_winner && <em className="tag-removed">removed from future</em>}
+                <ul className="entry-list">
+                  {filteredEntries.map((entry) => (
+                    <li key={entry.id} className={entry.ineligible ? 'entry-ineligible' : ''}>
+                      <div className="entry-info">
+                        <strong>
+                          {entry.first_name} {entry.last_name}
+                        </strong>
+                        <span className="entry-email">{entry.hofstra_email}</span>
+                        <span className="entry-meta">
+                          Checked in:{' '}
+                          {entry.checked_in_at
+                            ? new Date(entry.checked_in_at).toLocaleString()
+                            : 'Unknown'}
+                        </span>
+                        {duplicateIds.has(entry.id) && (
+                          <span className="badge-warning">Matching name on file</span>
+                        )}
+                        {entry.ineligible && (
+                          <span className="badge-excluded">Excluded from raffle</span>
+                        )}
+                      </div>
+                      <div className="entry-actions">
+                        <button
+                          className="button secondary"
+                          type="button"
+                          onClick={() => onToggleEligibility(entry.id, !entry.ineligible)}
+                        >
+                          {entry.ineligible ? 'Re-admit' : 'Exclude'}
+                        </button>
+                        <button
+                          className="button danger-text"
+                          type="button"
+                          onClick={() => onDeleteEntry(entry.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </li>
                   ))}
-                </ol>
+                </ul>
               )}
             </div>
-          </section>
-
-          <section className="panel ipod-card">
-            <div className="section-header-row">
-              <h2>Attendance & Participants ({entries.length})</h2>
-              <button
-                className="button secondary"
-                type="button"
-                onClick={onDownloadExcel}
-                disabled={exporting}
-              >
-                {exporting ? 'Exporting…' : 'Download Excel (.xlsx)'}
-              </button>
-            </div>
-            <input
-              className="search-input"
-              placeholder="Search by name or Hofstra email…"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-            {filteredEntries.length === 0 ? (
-              <p className="empty-text">No participants match the search.</p>
-            ) : (
-              <ul className="entry-list">
-                {filteredEntries.map((entry) => (
-                  <li key={entry.id} className={entry.ineligible ? 'entry-ineligible' : ''}>
-                    <div className="entry-info">
-                      <strong>
-                        {entry.first_name} {entry.last_name}
-                      </strong>
-                      <span className="entry-email">{entry.hofstra_email}</span>
-                      <span className="entry-meta">
-                        Checked in:{' '}
-                        {entry.checked_in_at
-                          ? new Date(entry.checked_in_at).toLocaleString()
-                          : 'Unknown'}
-                      </span>
-                      {duplicateIds.has(entry.id) && (
-                        <span className="badge-warning">Matching name on file</span>
-                      )}
-                      {entry.ineligible && (
-                        <span className="badge-excluded">Excluded from raffle</span>
-                      )}
-                    </div>
-                    <div className="entry-actions">
-                      <button
-                        className="button secondary"
-                        type="button"
-                        onClick={() => onToggleEligibility(entry.id, !entry.ineligible)}
-                      >
-                        {entry.ineligible ? 'Re-admit' : 'Exclude'}
-                      </button>
-                      <button
-                        className="button danger-text"
-                        type="button"
-                        onClick={() => onDeleteEntry(entry.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
           </section>
         </>
       )}
@@ -910,7 +993,7 @@ export function ProjectorModePage() {
             margin: 2,
             width: 320,
             errorCorrectionLevel: 'H',
-            color: { dark: '#1d1d1f', light: '#ffffff' },
+            color: { dark: '#1c1c1e', light: '#ffffff' },
           })
             .then(setQrDataUrl)
             .catch(() => setQrDataUrl(null))
@@ -1032,6 +1115,10 @@ export function ProjectorModePage() {
     <main className="container projector">
       <header className="host-header">
         <div>
+          <div className="ipod-status-bar">
+            <span className="status-title">Projector Display</span>
+            <span className="status-time">Live Drawing</span>
+          </div>
           <h1>{eventData?.name ?? 'Projector Mode'}</h1>
           <p className="subtitle">Live Raffle Drawing</p>
         </div>
@@ -1081,15 +1168,21 @@ export function ProjectorModePage() {
 
         {showQr && (
           <aside className="panel ipod-card projector-qr-panel">
-            <h2>Scan to Join</h2>
-            <div className="qr-wrap">
-              {qrDataUrl ? (
-                <img src={qrDataUrl} alt={`QR code for ${eventData?.name ?? 'event'}`} />
-              ) : (
-                <p>Generating QR code…</p>
-              )}
+            <div className="ipod-screen-bar">
+              <span>Entry QR Code</span>
+              <span className="ipod-battery-icon" />
             </div>
-            <p className="qr-hint">Scan with your camera to open check-in.</p>
+            <div className="ipod-card-content">
+              <h2>Scan to Join</h2>
+              <div className="qr-wrap">
+                {qrDataUrl ? (
+                  <img src={qrDataUrl} alt={`QR code for ${eventData?.name ?? 'event'}`} />
+                ) : (
+                  <p>Generating QR code…</p>
+                )}
+              </div>
+              <p className="qr-hint">Scan with your camera to open check-in.</p>
+            </div>
           </aside>
         )}
       </section>

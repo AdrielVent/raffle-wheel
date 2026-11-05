@@ -1,3 +1,4 @@
+import { normalizeHofstraUsername } from './hofstraEmail'
 import { supabase } from './supabase'
 import { validateFullName } from './validation'
 
@@ -10,8 +11,16 @@ export type PublicEvent = {
 }
 
 export type SubmissionResponse = {
-  status: 'accepted' | 'duplicate' | 'closed' | 'ended' | 'invalid_event' | 'rate_limited'
-  entry_id?: string
+  status:
+    | 'accepted'
+    | 'duplicate'
+    | 'already_checked_in'
+    | 'closed'
+    | 'ended'
+    | 'invalid_event'
+    | 'invalid_name'
+    | 'invalid_email'
+    | 'rate_limited'
   receipt_id?: string
 }
 
@@ -44,6 +53,7 @@ export async function submitEntry(
   slug: string,
   firstName: string,
   lastName: string,
+  hofstraUsernameInput: string,
   submissionId: string,
   retryReceipt: string,
 ): Promise<SubmissionResponse> {
@@ -55,11 +65,17 @@ export async function submitEntry(
     throw new Error(firstError)
   }
 
+  const emailValidation = normalizeHofstraUsername(hofstraUsernameInput)
+  if (!emailValidation.ok) {
+    throw new Error(emailValidation.message ?? 'Invalid Hofstra email username.')
+  }
+
   const { data, error } = await client.functions.invoke('public-submit', {
     body: {
       slug,
       firstName: validation.first.value,
       lastName: validation.last.value,
+      hofstraUsername: emailValidation.username,
       submissionId,
       retryReceipt,
     },

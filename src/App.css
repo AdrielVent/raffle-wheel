@@ -42,6 +42,27 @@ label {
   font-weight: 500;
 }
 
+
+.helper-text {
+  font-size: 0.8rem;
+  color: #4a4a4a;
+}
+
+.input-with-suffix {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.input-with-suffix span {
+  padding: 0.625rem 0.75rem;
+  border: 1px solid #bdbdbd;
+  border-radius: 8px;
+  background: #eef1f6;
+  font-weight: 600;
+}
+
 input {
   border: 1px solid #bdbdbd;
   border-radius: 8px;

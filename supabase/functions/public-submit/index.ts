@@ -1,9 +1,50 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4'
 
-const namePattern = /^[\p{L}\p{M}](?:[\p{L}\p{M}\s'\-]{0,98}[\p{L}\p{M}])?$/u
+const namePattern = /^[\p{L}\p{M}](?:[\p{L}\p{M}\s'-]{0,98}[\p{L}\p{M}])?$/u
+const hofstraDomain = 'hofstra.edu'
 
 function normalizeName(value: string) {
   return value.trim()
+}
+
+function normalizeHofstraUsername(raw: string) {
+  const trimmed = raw.trim()
+
+  if (!trimmed || /\s/.test(trimmed)) {
+    return { ok: false as const }
+  }
+
+  const atCount = (trimmed.match(/@/g) ?? []).length
+  if (atCount > 1) {
+    return { ok: false as const }
+  }
+
+  let username = trimmed
+
+  if (atCount === 1) {
+    const [candidateUsername, candidateDomain] = trimmed.split('@')
+
+    if (!candidateUsername || !candidateDomain) {
+      return { ok: false as const }
+    }
+
+    if (candidateDomain.toLocaleLowerCase() !== hofstraDomain) {
+      return { ok: false as const }
+    }
+
+    username = candidateUsername
+  }
+
+  const normalizedUsername = username.trim().toLocaleLowerCase()
+
+  if (!normalizedUsername || normalizedUsername.includes('@') || /\s/.test(normalizedUsername)) {
+    return { ok: false as const }
+  }
+
+  return {
+    ok: true as const,
+    email: `${normalizedUsername}@${hofstraDomain}`,
+  }
 }
 
 function hashFingerprint(input: string) {
@@ -24,6 +65,7 @@ Deno.serve(async (request) => {
   const slug = typeof body?.slug === 'string' ? body.slug.trim() : ''
   const firstName = typeof body?.firstName === 'string' ? normalizeName(body.firstName) : ''
   const lastName = typeof body?.lastName === 'string' ? normalizeName(body.lastName) : ''
+  const hofstraUsername = typeof body?.hofstraUsername === 'string' ? body.hofstraUsername : ''
   const submissionId = typeof body?.submissionId === 'string' ? body.submissionId : ''
   const retryReceipt = typeof body?.retryReceipt === 'string' ? body.retryReceipt : ''
 
@@ -33,6 +75,11 @@ Deno.serve(async (request) => {
 
   if (!namePattern.test(firstName) || !namePattern.test(lastName)) {
     return Response.json({ status: 'invalid_name' }, { status: 400 })
+  }
+
+  const emailValidation = normalizeHofstraUsername(hofstraUsername)
+  if (!emailValidation.ok) {
+    return Response.json({ status: 'invalid_email' }, { status: 400 })
   }
 
   const url = Deno.env.get('SUPABASE_URL')
@@ -80,6 +127,7 @@ Deno.serve(async (request) => {
     event_id: event.id,
     first_name: firstName,
     last_name: lastName,
+    hofstra_email: emailValidation.email,
     submission_id: submissionId,
     retry_receipt: retryReceipt,
   }
@@ -87,22 +135,33 @@ Deno.serve(async (request) => {
   const { data: inserted, error: insertError } = await supabase
     .from('entries')
     .insert(insertPayload)
-    .select('id,retry_receipt')
+    .select('retry_receipt')
     .maybeSingle()
 
   if (!insertError && inserted) {
-    return Response.json({ status: 'accepted', entry_id: inserted.id, receipt_id: inserted.retry_receipt }, { status: 200 })
+    return Response.json({ status: 'accepted', receipt_id: inserted.retry_receipt }, { status: 200 })
   }
 
-  const { data: existing } = await supabase
+  const { data: existingSubmission } = await supabase
     .from('entries')
-    .select('id,retry_receipt')
+    .select('retry_receipt')
     .eq('event_id', event.id)
     .eq('submission_id', submissionId)
     .maybeSingle()
 
-  if (existing) {
-    return Response.json({ status: 'duplicate', entry_id: existing.id, receipt_id: existing.retry_receipt }, { status: 200 })
+  if (existingSubmission) {
+    return Response.json({ status: 'duplicate', receipt_id: existingSubmission.retry_receipt }, { status: 200 })
+  }
+
+  const { data: existingEmail } = await supabase
+    .from('entries')
+    .select('id')
+    .eq('event_id', event.id)
+    .eq('hofstra_email', emailValidation.email)
+    .maybeSingle()
+
+  if (existingEmail) {
+    return Response.json({ status: 'already_checked_in', receipt_id: retryReceipt }, { status: 200 })
   }
 
   return Response.json({ status: 'invalid_event' }, { status: 500 })

@@ -26,6 +26,7 @@ import { isBackendConfigured } from './lib/env'
 import { findDuplicateNameIds } from './lib/duplicates'
 import { getPreferenceKey, getReceiptKey } from './lib/storage'
 import { supabase } from './lib/supabase'
+import { normalizeHofstraUsername } from './lib/hofstraEmail'
 import { validateFullName } from './lib/validation'
 import { computeWheelRotation } from './lib/wheel'
 
@@ -43,6 +44,8 @@ type EntryRow = {
   event_id: string
   first_name: string
   last_name: string
+  hofstra_email: string
+  checked_in_at: string | null
   ineligible: boolean
   created_at: string
 }
@@ -76,7 +79,7 @@ function HomePage() {
   return (
     <main className="container">
       <h1>QR Raffle Wheel</h1>
-      <p>Anonymous first-and-last-name entry for event raffles.</p>
+      <p>Anonymous event check-in with first name, last name, and Hofstra email username.</p>
       {!isBackendConfigured && <BackendRequiredMessage />}
       <div className="actions">
         <Link className="button" to="/host">
@@ -94,7 +97,9 @@ function AttendeePage() {
   const [loading, setLoading] = useState(true)
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
+  const [hofstraUsername, setHofstraUsername] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [usernameError, setUsernameError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
@@ -117,9 +122,12 @@ function AttendeePage() {
     event.preventDefault()
 
     const validation = validateFullName(firstName, lastName)
-    setError(validation.first.message ?? validation.last.message ?? null)
+    const emailValidation = normalizeHofstraUsername(hofstraUsername)
 
-    if (!validation.ok) {
+    setError(validation.first.message ?? validation.last.message ?? null)
+    setUsernameError(emailValidation.ok ? null : (emailValidation.message ?? 'Invalid Hofstra email username.'))
+
+    if (!validation.ok || !emailValidation.ok) {
       return
     }
 
@@ -136,16 +144,29 @@ function AttendeePage() {
 
     setSubmitting(true)
     setError(null)
+    setSuccess(null)
 
     try {
-      const response = await submitEntry(slug, validation.first.value, validation.last.value, submissionId, retryReceipt)
+      const response = await submitEntry(
+        slug,
+        validation.first.value,
+        validation.last.value,
+        emailValidation.username,
+        submissionId,
+        retryReceipt,
+      )
 
-      if (response.status === 'accepted' || response.status === 'duplicate') {
+      if (response.status === 'accepted' || response.status === 'duplicate' || response.status === 'already_checked_in') {
         localStorage.setItem(
           receiptKey,
           JSON.stringify({ submissionId, retryReceipt: response.receipt_id ?? retryReceipt }),
         )
-        setSuccess(`You're in, ${validation.first.value}! Watch the main screen for the drawing.`)
+        setUsernameError(null)
+        if (response.status === 'already_checked_in') {
+          setSuccess('This Hofstra email is already checked in for this event.')
+        } else {
+          setSuccess(`You're in, ${validation.first.value}! Watch the main screen for the drawing.`)
+        }
         return
       }
 
@@ -155,12 +176,18 @@ function AttendeePage() {
         setError('This raffle has ended.')
       } else if (response.status === 'rate_limited') {
         setError('Please wait a moment and try again.')
+      } else if (response.status === 'invalid_email') {
+        setUsernameError('Enter a valid Hofstra email username.')
       } else {
         setError('This event is unavailable.')
       }
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : 'Unable to submit entry.'
-      setError(message)
+      if (message.toLocaleLowerCase().includes('hofstra email')) {
+        setUsernameError(message)
+      } else {
+        setError(message)
+      }
     } finally {
       setSubmitting(false)
     }
@@ -210,12 +237,38 @@ function AttendeePage() {
           />
         </label>
 
+        <label>
+          Hofstra email for check-in
+          <div className="input-with-suffix">
+            <input
+              type="text"
+              value={hofstraUsername}
+              onChange={(e) => {
+                const rawValue = e.target.value
+                const trimmed = rawValue.trim()
+                const atCount = (trimmed.match(/@/g) ?? []).length
+                if (atCount === 1 && trimmed.toLocaleLowerCase().endsWith('@hofstra.edu')) {
+                  setHofstraUsername(trimmed.slice(0, trimmed.length - '@hofstra.edu'.length))
+                } else {
+                  setHofstraUsername(rawValue)
+                }
+              }}
+              autoComplete="email"
+              placeholder="aventura2"
+              required
+            />
+            <span>@hofstra.edu</span>
+          </div>
+          <small className="helper-text">Enter the part before @hofstra.edu.</small>
+          {usernameError && <small className="error">{usernameError}</small>}
+        </label>
+
         <button className="button" type="submit" disabled={submitDisabled}>
-          {submitting ? 'Joining…' : 'Join Raffle'}
+          {submitting ? 'Checking in…' : 'Check In & Join Raffle'}
         </button>
 
         <p className="privacy-note">
-          Privacy: first and last names are used for this raffle only. Winning names may be shown on the main display.
+          Privacy: first and last names plus Hofstra email addresses are collected for event check-in and raffle administration. Only winning names may be displayed publicly.
         </p>
       </form>
 
@@ -333,7 +386,7 @@ function HostDashboard() {
     const needle = search.trim().toLocaleLowerCase()
     if (!needle) return entries
     return entries.filter((entry) =>
-      `${entry.first_name} ${entry.last_name}`.toLocaleLowerCase().includes(needle),
+      `${entry.first_name} ${entry.last_name} ${entry.hofstra_email}`.toLocaleLowerCase().includes(needle),
     )
   }, [entries, search])
 
@@ -579,7 +632,8 @@ function HostDashboard() {
               {filteredEntries.map((entry) => (
                 <li key={entry.id}>
                   <span>
-                    {entry.first_name} {entry.last_name}
+                    {entry.first_name} {entry.last_name} — {entry.hofstra_email}
+                    <em> (checked in {entry.checked_in_at ? new Date(entry.checked_in_at).toLocaleString() : 'unknown time'})</em>
                     {duplicateIds.has(entry.id) && <em> (name matches another entry)</em>}
                     {entry.ineligible && <em> (ineligible)</em>}
                   </span>

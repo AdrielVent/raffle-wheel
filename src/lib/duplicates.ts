@@ -2,6 +2,7 @@ export type EntryName = {
   id: string
   first_name: string
   last_name: string
+  hofstra_email?: string
 }
 
 export function findDuplicateNameIds(entries: EntryName[]): Set<string> {

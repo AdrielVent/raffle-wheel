@@ -1,6 +1,6 @@
 # raffle-wheel
 
-QR-code raffle wheel for college events with anonymous attendee entry and authenticated host controls.
+QR-code raffle wheel for college events with attendee check-in (first name, last name, Hofstra email) and authenticated host controls.
 
 ## Architecture
 
@@ -71,12 +71,12 @@ This avoids accidental public deployment before backend setup and repository sec
 
 ## Data handling and privacy
 
-- Attendee page asks only first name + last name.
-- Names are validated on both client and server.
+- Attendee page requires first name, last name, and Hofstra email username (rendered as `username + @hofstra.edu`).
+- The server normalizes username input and constructs the final `@hofstra.edu` email server-side.
 - Browser storage stores only event-specific retry IDs and host UI preferences.
 - No authoritative participant list in browser storage.
 - Privacy notice is shown on attendee screen.
-- Name-only entry cannot verify identity or guarantee one entry per person.
+- A self-reported Hofstra email does **not** verify mailbox ownership, enrollment, physical attendance, or one unique human.
 - Rate-limiting uses transient hashed network fingerprint (`x-forwarded-for` + user agent hash) per minute window.
 
 ## Host operator guide
@@ -85,7 +85,7 @@ Host dashboard supports:
 
 - Create named events
 - Copy entry link + download QR
-- Live participant count/list with search
+- Live participant count/list with search (including host-only Hofstra email visibility)
 - Duplicate-name flagging (without auto-rejection)
 - Remove entries
 - Open/close registration
@@ -95,13 +95,14 @@ Host dashboard supports:
 - Clear entries (confirmation)
 - End events
 - Delete event data
-- Projector mode with wheel animation and winner banner
+- Projector mode with wheel animation and winner banner (winner names only)
 
 ## Tests and verification
 
 Automated tests currently cover:
 
 - Name validation (Unicode + allowed punctuation)
+- Hofstra username/email normalization (username-only and pasted full address)
 - Duplicate-name flagging logic
 - Closed/ended/invalid state helpers
 - Wheel landing calculations
@@ -119,13 +120,17 @@ npm run test
 Manual/integration checks to run against a real Supabase project:
 
 1. Public submit idempotency (`submission_id` retry does not duplicate rows).
-2. Same-name legitimate entrants are both accepted and flagged only in host UI.
-3. Closed/ended events reject public submissions server-side.
-4. Anonymous client cannot read/write protected tables directly.
-5. Cross-event isolation: host can only see/manage owned events.
-6. Concurrent draw requests with same `request_id` return same persisted winner.
-7. Concurrent different draw requests are serialized per event lock.
-8. Snapshot integrity: winner and animation remain tied to saved snapshot despite later entry updates.
+2. Same-name/different-email entrants are accepted and flagged only for matching names.
+3. Username/email normalization handles pasted `@hofstra.edu` values and rejects other domains.
+4. Per-event email uniqueness is enforced atomically under concurrent requests.
+5. Closed/ended events reject public submissions server-side.
+6. Anonymous client cannot read/write protected tables directly.
+7. Cross-event isolation: host can only see/manage owned events.
+8. Concurrent draw requests with same `request_id` return same persisted winner.
+9. Concurrent different draw requests are serialized per event lock.
+10. Snapshot integrity: winner and animation remain tied to saved snapshot despite later entry updates.
+11. Public responses and projector mode never disclose attendee emails.
+12. Event deletion removes email-containing check-in records.
 
 ## Cost/quota items to verify in your own environment
 
@@ -137,20 +142,22 @@ Manual/integration checks to run against a real Supabase project:
 
 ## Known limitations
 
+- Hofstra email is self-reported only; no verification/SSO is performed.
 - Projector wheel currently emphasizes deterministic landing and readability over advanced decorative visuals.
 - Optional winner sound uses a minimal built-in audio cue.
 - Full two-device acceptance checks require deployed Supabase and physical QR scans.
 
 ## Acceptance checklist
 
-- [ ] QR scanning opens anonymous first/last-name entry page
+- [ ] QR scanning opens first/last/Hofstra-email check-in page
 - [ ] Entry succeeds only after server confirmation
 - [ ] Retry deduplication prevents duplicate inserts
-- [ ] Matching-name entrants are both accepted and flagged for host
+- [ ] Per-event email uniqueness blocks second entry for same normalized email
+- [ ] Matching-name entrants with different emails are both accepted and flagged for host
 - [ ] Live host updates across devices
 - [ ] Closed registration enforced server-side
 - [ ] Ended event enforced server-side
-- [ ] Host-only data/actions protected by auth + owner checks
+- [ ] Host-only data/actions (including emails) protected by auth + owner checks
 - [ ] Draw snapshots preserved and wheel lands on persisted winner
 - [ ] Winner removal toggle works without deleting history
 - [ ] Event deletion and clear-entry confirmation flows work

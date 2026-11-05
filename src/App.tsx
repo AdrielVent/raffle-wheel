@@ -25,6 +25,11 @@ import {
 } from './lib/api'
 import { isBackendConfigured, isLiveBackendConfigured } from './lib/env'
 import { findDuplicateNameIds } from './lib/duplicates'
+import {
+  subscribeToLiveCheckIns,
+  syncAllRemoteCheckIns,
+  syncIncomingEntry,
+} from './lib/cloudSync'
 import { downloadAttendanceExcel } from './lib/excel'
 import { getPreferenceKey, getReceiptKey } from './lib/storage'
 import { supabase } from './lib/supabase'
@@ -459,6 +464,9 @@ export function HostDashboard() {
   const refreshEventDetails = useCallback(async (eventId: string) => {
     if (!supabase) return
 
+    // Sync any newly arrived remote check-ins from phones or Google Sheet
+    await syncAllRemoteCheckIns(eventId)
+
     const [entriesResponse, drawsResponse] = await Promise.all([
       supabase
         .from('entries')
@@ -502,9 +510,19 @@ export function HostDashboard() {
       return
     }
 
-    refreshEventDetails(selectedEventId)
+    void refreshEventDetails(selectedEventId)
 
-    if (!supabase) return
+    // Listen to live cross-device check-ins from phones via SSE
+    const unsubscribeCloud = subscribeToLiveCheckIns((entry) => {
+      syncIncomingEntry(entry)
+      void refreshEventDetails(selectedEventId)
+    })
+
+    if (!supabase) {
+      return () => {
+        unsubscribeCloud()
+      }
+    }
 
     // Supabase Realtime subscription
     const channel = supabase
@@ -525,10 +543,10 @@ export function HostDashboard() {
       )
       .subscribe()
 
-    // Fallback periodic poll every 5s to ensure live synchronization across devices
+    // Active sync poll every 3s to guarantee cross-device delivery
     const interval = setInterval(() => {
       refreshEventDetails(selectedEventId)
-    }, 5000)
+    }, 3000)
 
     const handleSync = () => {
       refreshEventDetails(selectedEventId)
@@ -538,6 +556,7 @@ export function HostDashboard() {
 
     return () => {
       channel.unsubscribe()
+      unsubscribeCloud()
       clearInterval(interval)
       window.removeEventListener('storage', handleSync)
       window.removeEventListener('raffle_demo_change', handleSync)
@@ -620,6 +639,9 @@ export function HostDashboard() {
     if (!selectedEvent) return
     setExporting(true)
     try {
+      // Pull latest check-ins across devices first
+      await syncAllRemoteCheckIns(selectedEvent.id)
+
       // Ensure we export all attendance records for the selected event, not just the search view
       let exportList = entries
       if (supabase) {
@@ -893,7 +915,10 @@ export function HostDashboard() {
                 <span className="ipod-battery-icon" />
               </div>
               <div className="ipod-card-content">
-                <h2>Entry Link & QR Code</h2>
+                <div className="row wrap space-between align-center">
+                  <h2>Entry Link & QR Code</h2>
+                  <span className="sync-badge">● LIVE CLOUD SYNC CONNECTED</span>
+                </div>
                 <p className="mono-link">{entryLink}</p>
                 <div className="row wrap">
                   <button
@@ -1158,6 +1183,8 @@ export function ProjectorModePage() {
   const [showQr, setShowQr] = useState(true)
   const [playSound, setPlaySound] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
+  const [recentAttendee, setRecentAttendee] = useState<string | null>(null)
+  const [spinning, setSpinning] = useState(false)
 
   // Load event details and real QR code
   useEffect(() => {
@@ -1184,29 +1211,43 @@ export function ProjectorModePage() {
         }
       })
 
-    // Load initial entries for rendering accurate wheel segments
-    supabase
-      .from('entries')
-      .select('*')
-      .eq('event_id', eventId)
-      .order('created_at', { ascending: true })
-      .then(({ data }: { data: any }) => {
-        if (data) setEntries(data as EntryRow[])
+    const reloadEntries = () => {
+      if (!supabase) return
+      void syncAllRemoteCheckIns(eventId).then(() => {
+        if (!supabase) return
+        supabase
+          .from('entries')
+          .select('*')
+          .eq('event_id', eventId)
+          .order('created_at', { ascending: true })
+          .then(({ data }: { data: any }) => {
+            if (data) setEntries(data as EntryRow[])
+          })
+        supabase
+          .from('draws')
+          .select('*')
+          .eq('event_id', eventId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+          .then(({ data }: { data: any }) => {
+            if (data) setDraw(data as DrawRow)
+          })
       })
+    }
 
-    // Load latest draw
-    supabase
-      .from('draws')
-      .select('*')
-      .eq('event_id', eventId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then(({ data }: { data: any }) => {
-        if (data) setDraw(data as DrawRow)
-      })
+    // Initial load
+    reloadEntries()
 
-    // Subscribe to new draws
+    // Subscribe to live cross-device check-ins from phones via SSE
+    const unsubscribeCloud = subscribeToLiveCheckIns((entry) => {
+      syncIncomingEntry(entry)
+      setRecentAttendee(`${entry.first_name} ${entry.last_name}`)
+      setTimeout(() => setRecentAttendee(null), 5000)
+      reloadEntries()
+    })
+
+    // Subscribe to new draws via Supabase
     const channel = supabase
       .channel(`projector-${eventId}`)
       .on(
@@ -1220,47 +1261,18 @@ export function ProjectorModePage() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'entries', filter: `event_id=eq.${eventId}` },
         () => {
-          if (!supabase) return
-          supabase
-            .from('entries')
-            .select('*')
-            .eq('event_id', eventId)
-            .order('created_at', { ascending: true })
-            .then(({ data }: { data: any }) => {
-              if (data) setEntries(data as EntryRow[])
-            })
+          reloadEntries()
         },
       )
       .subscribe()
 
-    const reloadEntries = () => {
-      if (!supabase) return
-      supabase
-        .from('entries')
-        .select('*')
-        .eq('event_id', eventId)
-        .order('created_at', { ascending: true })
-        .then(({ data }: { data: any }) => {
-          if (data) setEntries(data as EntryRow[])
-        })
-      supabase
-        .from('draws')
-        .select('*')
-        .eq('event_id', eventId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-        .then(({ data }: { data: any }) => {
-          if (data) setDraw(data as DrawRow)
-        })
-    }
-
-    const interval = setInterval(reloadEntries, 2000)
+    const interval = setInterval(reloadEntries, 2500)
     window.addEventListener('storage', reloadEntries)
     window.addEventListener('raffle_demo_change', reloadEntries)
 
     return () => {
       channel.unsubscribe()
+      unsubscribeCloud()
       clearInterval(interval)
       window.removeEventListener('storage', reloadEntries)
       window.removeEventListener('raffle_demo_change', reloadEntries)
@@ -1320,6 +1332,32 @@ export function ProjectorModePage() {
     return `conic-gradient(${stops.join(', ')})`
   }, [wheelParticipants])
 
+  async function onSpinProjectorWheel() {
+    if (!eventId || wheelParticipants.length === 0 || spinning) return
+    setSpinning(true)
+    try {
+      const res = await runDraw(eventId, crypto.randomUUID(), true)
+      if (res?.winner_first_name) {
+        // Updated draw triggers rotation animation via listener
+        if (!supabase) return
+        supabase
+          .from('draws')
+          .select('*')
+          .eq('event_id', eventId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+          .then(({ data }: { data: any }) => {
+            if (data) setDraw(data as DrawRow)
+          })
+      }
+    } catch (err) {
+      alert(`Drawing failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setSpinning(false)
+    }
+  }
+
   const winnerName = draw?.winner_first_name
     ? `${draw.winner_first_name} ${draw.winner_last_name}`
     : 'Waiting for drawing…'
@@ -1361,6 +1399,11 @@ export function ProjectorModePage() {
 
       <section className="projector-grid">
         <div className="wheel-shell" aria-live="polite">
+          {recentAttendee && (
+            <div className="live-checkin-banner">
+              ✨ {recentAttendee} just checked in!
+            </div>
+          )}
           <div className="pointer" />
           <div
             className="wheel"
@@ -1369,6 +1412,29 @@ export function ProjectorModePage() {
               background: wheelBackground,
             }}
           >
+            {wheelParticipants.length > 0 && wheelParticipants.length <= 24 && (
+              <svg className="wheel-svg" viewBox="-200 -200 400 400">
+                {wheelParticipants.map((p, idx) => {
+                  const sliceAngle = 360 / wheelParticipants.length
+                  const midAngle = idx * sliceAngle + sliceAngle / 2
+                  const label = `${p.first_name} ${p.last_name ? p.last_name[0] + '.' : ''}`
+                  return (
+                    <g key={p.id || idx} transform={`rotate(${midAngle})`}>
+                      <text
+                        x="170"
+                        y="5"
+                        textAnchor="end"
+                        fill="#1c1c1e"
+                        fontSize={wheelParticipants.length > 12 ? '11px' : '13px'}
+                        fontWeight="700"
+                      >
+                        {label}
+                      </text>
+                    </g>
+                  )
+                })}
+              </svg>
+            )}
             <div className="wheel-center" />
           </div>
           {wheelParticipants.length > 36 && (
@@ -1377,6 +1443,15 @@ export function ProjectorModePage() {
               participants). Winner selection is server-authoritative and unbiased.
             </p>
           )}
+
+          <button
+            className="button primary spin-projector-btn"
+            type="button"
+            onClick={onSpinProjectorWheel}
+            disabled={spinning || wheelParticipants.length === 0}
+          >
+            {spinning ? 'Spinning Wheel…' : '🎲 Spin The Wheel'}
+          </button>
         </div>
 
         {showQr && (
@@ -1406,6 +1481,26 @@ export function ProjectorModePage() {
         <p className="participant-summary">
           Eligible participants in draw snapshot: {draw?.snapshot_size ?? wheelParticipants.length}
         </p>
+      </div>
+
+      <div className="attendee-roster panel ipod-card">
+        <div className="ipod-screen-bar">
+          <span>Current Wheel Entries ({wheelParticipants.length})</span>
+          <span className="live-dot-pulse">● LIVE SYNC</span>
+        </div>
+        <div className="ipod-card-content">
+          <div className="roster-tags">
+            {wheelParticipants.length === 0 ? (
+              <p className="status-note">Waiting for attendees to scan QR code and check in…</p>
+            ) : (
+              wheelParticipants.map((p) => (
+                <span key={p.id} className="roster-tag">
+                  {p.first_name} {p.last_name}
+                </span>
+              ))
+            )}
+          </div>
+        </div>
       </div>
     </main>
   )

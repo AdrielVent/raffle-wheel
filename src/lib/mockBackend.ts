@@ -1,4 +1,5 @@
 import type { SubmissionResponse } from './api'
+import { broadcastCheckIn } from './cloudSync'
 import { normalizeHofstraUsername } from './hofstraEmail'
 import { validateFullName } from './validation'
 
@@ -310,6 +311,9 @@ export function createMockSupabaseClient(): any {
 
           entries.push(newEntry)
           setEntries(entries)
+
+          // Broadcast to other devices (host laptop, projector wheel) in real time
+          void broadcastCheckIn(newEntry)
 
           return {
             data: { status: 'accepted', receipt_id: receiptId } as SubmissionResponse,

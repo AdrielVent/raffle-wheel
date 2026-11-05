@@ -1,3 +1,4 @@
+import { broadcastCheckIn } from './cloudSync'
 import { normalizeHofstraUsername } from './hofstraEmail'
 import { supabase } from './supabase'
 import { validateFullName } from './validation'
@@ -86,7 +87,20 @@ export async function submitEntry(
     throw error
   }
 
-  return data as SubmissionResponse
+  const response = data as SubmissionResponse
+  if (response?.status === 'accepted') {
+    void broadcastCheckIn({
+      id: submissionId,
+      event_id: 'evt-nasa-2026',
+      first_name: validation.first.value,
+      last_name: validation.last.value,
+      hofstra_email: `${emailValidation.username.toLowerCase()}@hofstra.edu`,
+      checked_in_at: new Date().toISOString(),
+      ineligible: false,
+    })
+  }
+
+  return response
 }
 
 export async function createEvent(name: string) {

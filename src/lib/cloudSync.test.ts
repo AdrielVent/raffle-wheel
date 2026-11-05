@@ -1,7 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import {
   broadcastCheckIn,
-  fetchRemoteCheckIns,
   syncIncomingEntry,
   syncAllRemoteCheckIns,
 } from './cloudSync'

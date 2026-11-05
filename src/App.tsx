@@ -1212,6 +1212,27 @@ export function HostDashboard() {
                 <h2>Attendance & Participants ({entries.length})</h2>
                 <div className="row wrap">
                   <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => {
+                      if (selectedEventId) {
+                        void refreshEventDetails(selectedEventId)
+                      }
+                    }}
+                    title="Refresh attendance records from cloud"
+                  >
+                    🔄 Refresh
+                  </button>
+                  <a
+                    className="button secondary"
+                    href="https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/edit?usp=sharing"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open connected Google Sheet"
+                  >
+                    Google Sheet ↗
+                  </a>
+                  <button
                     className="button danger"
                     type="button"
                     onClick={onDeleteAllEntries}
@@ -1309,7 +1330,7 @@ export function ProjectorModePage() {
       const raw = localStorage.getItem('raffle_mock_entries_v1')
       const all: EntryRow[] = raw ? JSON.parse(raw) : []
       const filtered = all
-        .filter((e) => e.event_id === eventId)
+        .filter((e) => !e.event_id || e.event_id === eventId)
         .sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
       setEntries(filtered)
     } catch {
@@ -1320,7 +1341,7 @@ export function ProjectorModePage() {
       const dRaw = localStorage.getItem('raffle_mock_draws_v1')
       const draws: DrawRow[] = dRaw ? JSON.parse(dRaw) : []
       const latest = draws
-        .filter((d) => d.event_id === eventId)
+        .filter((d) => !d.event_id || d.event_id === eventId)
         .sort((a, b) => (a.created_at > b.created_at ? -1 : 1))[0]
       if (latest) setDraw(latest)
     } catch {
@@ -1410,14 +1431,15 @@ export function ProjectorModePage() {
     }
   }, [eventId, readLocalEntries, syncAndReload])
 
-  // Determine the active participant list for the wheel:
-  // Use the draw's immutable snapshot if available, or current eligible entries
+  // Active participant list for the wheel:
+  // Shows all currently eligible live entries.
+  // During an active spin animation, if a draw snapshot exists, use it so the wheel lands on the winner.
   const wheelParticipants = useMemo(() => {
-    if (draw?.snapshot?.length) {
+    if (spinning && draw?.snapshot?.length) {
       return draw.snapshot
     }
     return entries.filter((e) => !e.ineligible)
-  }, [draw, entries])
+  }, [spinning, draw, entries])
 
   useEffect(() => {
     if (!draw?.snapshot?.length || !draw.winner_entry_id) return
@@ -1494,12 +1516,14 @@ export function ProjectorModePage() {
           <h1>{eventData?.name ?? 'Projector Mode'}</h1>
           <p className="subtitle">Live Raffle Drawing</p>
         </div>
-        <Link className="button secondary" to="/">
-          🏠 Home
-        </Link>
-        <Link className="button secondary" to="/host">
-          Back to Host
-        </Link>
+        <div className="row wrap gap-sm">
+          <Link className="button secondary" to="/">
+            🏠 Home
+          </Link>
+          <Link className="button secondary" to="/host">
+            Back to Host
+          </Link>
+        </div>
       </header>
 
       <div className="row wrap controls-bar align-center">

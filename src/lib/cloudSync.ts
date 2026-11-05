@@ -2,8 +2,7 @@ import type { EntryRow } from '../App'
 import { normalizeHofstraUsername } from './hofstraEmail'
 
 export const NTFY_TOPIC = 'raffle_wheel_nasa_space_apps_entries_v1'
-export const NTFY_ENDPOINT = `https://ntfy.sh/${NTFY_TOPIC}`
-export const CLOUD_RELAY_ENDPOINT = 'https://api.restful-api.dev/objects/ff808181a09d98f701a1acfbb8d2459b'
+export const NTFY_ENDPOINT = `https://ntfy.envs.net/${NTFY_TOPIC}`
 export const GOOGLE_SHEET_URL =
   'https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/edit?usp=sharing'
 export const GOOGLE_SHEET_GVIZ =
@@ -14,7 +13,7 @@ const STORAGE_KEY_ENTRIES = 'raffle_mock_entries_v1'
 /**
  * Fetch wrapper with an automatic timeout to ensure network requests never hang or freeze the UI.
  */
-function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 2500): Promise<Response> {
+function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 3500): Promise<Response> {
   if (typeof fetch === 'undefined') {
     return Promise.reject(new Error('fetch unavailable'))
   }
@@ -27,7 +26,6 @@ function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 25
  * Broadcasts a clear event across devices in real time.
  */
 export async function broadcastClearEvent(eventId: string, clearedAt: string): Promise<void> {
-  // 1. ntfy broadcast (for unit tests and SSE listeners)
   try {
     await fetchWithTimeout(
       NTFY_ENDPOINT,
@@ -39,28 +37,10 @@ export async function broadcastClearEvent(eventId: string, clearedAt: string): P
           Tags: 'wastebasket',
         },
       },
-      1500,
+      3000,
     )
   } catch (err) {
-    console.warn('ntfy clear broadcast warning:', err)
-  }
-
-  // 2. Clear cloud edge relay
-  try {
-    await fetchWithTimeout(
-      CLOUD_RELAY_ENDPOINT,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'nasa_raffle_shared_entries_v1',
-          data: { entries: [], cleared_at: clearedAt },
-        }),
-      },
-      2500,
-    )
-  } catch (err) {
-    console.warn('Cloud relay clear warning:', err)
+    console.warn('Clear event broadcast warning:', err)
   }
 }
 
@@ -82,7 +62,7 @@ export async function clearEventCloudSync(eventId: string): Promise<void> {
 }
 
 /**
- * Broadcasts a newly checked-in attendee to cloud relay and notification endpoints.
+ * Broadcasts a newly checked-in attendee to the real-time cloud channel.
  */
 export async function broadcastCheckIn(entry: {
   id: string
@@ -93,9 +73,8 @@ export async function broadcastCheckIn(entry: {
   checked_in_at: string
   ineligible?: boolean
 }): Promise<void> {
-  // 1. ntfy broadcast (for unit tests / pubsub listeners)
   try {
-    void fetchWithTimeout(
+    await fetchWithTimeout(
       NTFY_ENDPOINT,
       {
         method: 'POST',
@@ -105,110 +84,44 @@ export async function broadcastCheckIn(entry: {
           Tags: 'entry',
         },
       },
-      1500,
-    ).catch(() => {})
-  } catch {
-    // Non-fatal
-  }
-
-  // 2. Cloud Edge Relay (Cloudflare edge - persistent, ultra-fast, cross-device)
-  try {
-    const getRes = await fetchWithTimeout(CLOUD_RELAY_ENDPOINT, {}, 2500)
-    let existingEntries: any[] = []
-    let clearedAt: string | null = null
-    if (getRes.ok) {
-      const body = await getRes.json()
-      existingEntries = Array.isArray(body?.data?.entries) ? body.data.entries : []
-      clearedAt = body?.data?.cleared_at || null
-    }
-
-    const normalizedEmail = entry.hofstra_email.toLowerCase().trim()
-    const alreadyPresent = existingEntries.some(
-      (e: any) => e.hofstra_email?.toLowerCase().trim() === normalizedEmail,
+      3000,
     )
-
-    if (!alreadyPresent) {
-      existingEntries.push({
-        ...entry,
-        ineligible: Boolean(entry.ineligible),
-        created_at: entry.checked_in_at || new Date().toISOString(),
-      })
-
-      await fetchWithTimeout(
-        CLOUD_RELAY_ENDPOINT,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: 'nasa_raffle_shared_entries_v1',
-            data: { entries: existingEntries, cleared_at: clearedAt },
-          }),
-        },
-        2500,
-      )
-    }
   } catch (err) {
-    console.warn('Cloud edge relay check-in broadcast warning:', err)
+    console.warn('Attendee check-in broadcast warning:', err)
   }
 }
 
 /**
- * Fetches all cross-device check-ins from both Cloud Relay and ntfy.
+ * Fetches all cross-device check-ins from the cloud cache.
  */
 export async function fetchRemoteCheckIns(): Promise<EntryRow[]> {
-  const list: EntryRow[] = []
-
-  // 1. Fetch from Cloud Edge Relay (primary, ultra-fast, reliable)
   try {
-    const res = await fetchWithTimeout(CLOUD_RELAY_ENDPOINT, {}, 2500)
-    if (res.ok) {
-      const body = await res.json()
-      const entries = Array.isArray(body?.data?.entries) ? body.data.entries : []
-      const clearedAt = body?.data?.cleared_at
-      const clearTime = clearedAt ? new Date(clearedAt).getTime() : 0
+    const res = await fetchWithTimeout(`${NTFY_ENDPOINT}/json?poll=1&since=all`, {}, 3000)
+    if (!res.ok) return []
+    const text = await res.text()
+    const lines = text.split('\n').filter(Boolean)
+    const list: EntryRow[] = []
 
-      for (const item of entries) {
-        if (item?.first_name && item?.hofstra_email) {
-          const itemTime = new Date(item.checked_in_at || item.created_at || 0).getTime()
-          if (!clearTime || itemTime >= clearTime) {
-            list.push(item as EntryRow)
-          }
-        }
-      }
-    }
-  } catch {
-    // Non-fatal
-  }
-
-  // 2. Fetch from ntfy.sh (fallback / vitest mock support)
-  try {
-    const res = await fetchWithTimeout(`${NTFY_ENDPOINT}/json?poll=1&since=all`, {}, 1500)
-    if (res.ok) {
-      const text = await res.text()
-      const lines = text.split('\n').filter(Boolean)
-
-      for (const line of lines) {
-        try {
-          const parsed = JSON.parse(line)
-          if (parsed.message) {
-            const entry = JSON.parse(parsed.message) as EntryRow
-            if (entry.first_name && entry.hofstra_email) {
-              const normalized = entry.hofstra_email.toLowerCase().trim()
-              if (!list.some((e) => e.hofstra_email.toLowerCase().trim() === normalized)) {
-                list.push(entry)
-              }
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line)
+        if (parsed.message) {
+          const entry = JSON.parse(parsed.message) as EntryRow
+          if (entry.first_name && entry.hofstra_email) {
+            const normalized = entry.hofstra_email.toLowerCase().trim()
+            if (!list.some((e) => e.hofstra_email.toLowerCase().trim() === normalized)) {
+              list.push(entry)
             }
           }
-        } catch {
-          // ignore malformed line
         }
+      } catch {
+        // ignore malformed line
       }
     }
+    return list
   } catch {
-    // Non-fatal
+    return []
   }
-
-  return list
 }
 
 /**
@@ -216,7 +129,7 @@ export async function fetchRemoteCheckIns(): Promise<EntryRow[]> {
  */
 export async function fetchGoogleSheetCheckIns(eventId: string): Promise<EntryRow[]> {
   try {
-    const res = await fetchWithTimeout(GOOGLE_SHEET_GVIZ, {}, 2500)
+    const res = await fetchWithTimeout(GOOGLE_SHEET_GVIZ, {}, 3000)
     if (!res.ok) return []
     const text = await res.text()
     const jsonStr = text.replace(/^[^{]*/, '').replace(/[^}]*$/, '')
@@ -368,7 +281,7 @@ export function syncIncomingEntry(entry: EntryRow): boolean {
 }
 
 /**
- * Fetches all entries from the cloud (Cloud Relay + ntfy + Google Sheet) and merges into local storage.
+ * Fetches all entries from the cloud and merges into local storage.
  */
 export async function syncAllRemoteCheckIns(eventId = 'evt-nasa-2026'): Promise<EntryRow[]> {
   if (typeof window === 'undefined' || !window.localStorage) return []

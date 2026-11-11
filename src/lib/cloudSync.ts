@@ -3,12 +3,67 @@ import { normalizeHofstraUsername } from './hofstraEmail'
 
 export const NTFY_TOPIC = 'raffle_wheel_nasa_space_apps_entries_v1'
 export const NTFY_ENDPOINT = `https://ntfy.envs.net/${NTFY_TOPIC}`
+export const NTFY_EVENTS_ENDPOINT = `https://ntfy.envs.net/raffle_wheel_events_channel_v1`
 export const GOOGLE_SHEET_URL =
   'https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/edit?usp=sharing'
 export const GOOGLE_SHEET_GVIZ =
   'https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/gviz/tq?tqx=out:json'
 
 const STORAGE_KEY_ENTRIES = 'raffle_mock_entries_v1'
+
+/**
+ * Broadcasts a newly created event across devices.
+ */
+export async function broadcastEvent(event: any): Promise<void> {
+  try {
+    await fetchWithTimeout(
+      NTFY_EVENTS_ENDPOINT,
+      {
+        method: 'POST',
+        body: JSON.stringify(event),
+        headers: {
+          Title: 'Event Created',
+          Tags: 'calendar',
+        },
+      },
+      3000,
+    )
+  } catch (err) {
+    console.warn('Event broadcast warning:', err)
+  }
+}
+
+/**
+ * Fetches all cross-device events from the cloud cache.
+ */
+export async function fetchRemoteEvents(): Promise<any[]> {
+  try {
+    const res = await fetchWithTimeout(`${NTFY_EVENTS_ENDPOINT}/json?poll=1&since=all`, {}, 3000)
+    if (!res.ok) return []
+    const text = await res.text()
+    const lines = text.split('\n').filter(Boolean)
+    const list: any[] = []
+
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line)
+        if (parsed.message) {
+          const ev = JSON.parse(parsed.message)
+          if (ev.name && ev.slug) {
+            if (!list.some((e) => e.slug === ev.slug)) {
+              list.push(ev)
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return list
+  } catch {
+    return []
+  }
+}
 
 /**
  * Fetch wrapper with an automatic timeout to ensure network requests never hang or freeze the UI.

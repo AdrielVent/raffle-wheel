@@ -9,6 +9,7 @@ import {
   Routes,
   useNavigate,
   useParams,
+  useSearchParams,
 } from 'react-router-dom'
 import './App.css'
 import {
@@ -27,6 +28,7 @@ import { isBackendConfigured, isLiveBackendConfigured } from './lib/env'
 import { findDuplicateNameIds } from './lib/duplicates'
 import {
   clearEventCloudSync,
+  fetchRemoteEvents,
   subscribeToLiveCheckIns,
   syncAllRemoteCheckIns,
   syncIncomingEntry,
@@ -95,7 +97,7 @@ function HomePage() {
       <header className="page-header">
         <div className="ipod-status-bar">
           <span className="status-title">QR Raffle Wheel</span>
-          <span className="status-time">NASA Event</span>
+          <span className="status-time">Live Events</span>
         </div>
         <h1>QR Raffle Wheel</h1>
         <p className="subtitle">Event check-in and server-authoritative raffle drawings</p>
@@ -150,8 +152,35 @@ function HomePage() {
 export function AttendeePage() {
   const params = useParams()
   const slug = params.slug ?? ''
-  const [eventState, setEventState] = useState<Awaited<ReturnType<typeof getPublicEvent>>>()
-  const [loading, setLoading] = useState(() => Boolean(isBackendConfigured && slug))
+  const [searchParams] = useSearchParams()
+
+  let nameFromUrl = searchParams.get('name')
+  let idFromUrl = searchParams.get('id')
+
+  if (!nameFromUrl && typeof window !== 'undefined' && window.location.hash.includes('?')) {
+    try {
+      const qStr = window.location.hash.split('?')[1]
+      const sp = new URLSearchParams(qStr)
+      nameFromUrl = sp.get('name')
+      idFromUrl = sp.get('id')
+    } catch {
+      // ignore
+    }
+  }
+
+  const [eventState, setEventState] = useState<Awaited<ReturnType<typeof getPublicEvent>>>(() => {
+    if (slug && nameFromUrl) {
+      return {
+        id: idFromUrl || `evt-${slug}`,
+        name: decodeURIComponent(nameFromUrl),
+        slug,
+        status: 'open',
+        registration_open: true,
+      }
+    }
+    return null
+  })
+  const [loading, setLoading] = useState(() => Boolean(isBackendConfigured && slug && !nameFromUrl))
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [hofstraUsername, setHofstraUsername] = useState('')
@@ -163,14 +192,41 @@ export function AttendeePage() {
   const headingRef = useRef<HTMLHeadingElement>(null)
 
   useEffect(() => {
-    if (!isBackendConfigured || !slug) return
+    if (!slug) return
+
+    // If event metadata is embedded in the QR code URL, use it immediately and store locally
+    if (nameFromUrl) {
+      const embeddedEvent = {
+        id: idFromUrl || `evt-${slug}`,
+        name: decodeURIComponent(nameFromUrl),
+        slug,
+        status: 'open' as const,
+        registration_open: true,
+      }
+      setEventState(embeddedEvent)
+      setLoading(false)
+
+      try {
+        const raw = localStorage.getItem('raffle_mock_events_v1')
+        const events: any[] = raw ? JSON.parse(raw) : []
+        if (!events.some((e) => e.slug === slug)) {
+          events.push(embeddedEvent)
+          localStorage.setItem('raffle_mock_events_v1', JSON.stringify(events))
+        }
+      } catch {
+        // ignore
+      }
+      return
+    }
+
+    if (!isBackendConfigured) return
 
     setLoading(true)
     getPublicEvent(slug)
       .then((event) => setEventState(event))
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false))
-  }, [slug])
+  }, [slug, nameFromUrl, idFromUrl])
 
   // Move accessible focus to confirmation heading when confirmed screen renders
   useEffect(() => {
@@ -238,6 +294,7 @@ export function AttendeePage() {
         submissionId,
         retryReceipt,
         eventState.id,
+        eventState.name,
       )
 
       if (response.status === 'accepted' || response.status === 'duplicate') {
@@ -490,6 +547,27 @@ export function HostDashboard() {
 
   const refreshEvents = useCallback(async () => {
     if (!supabase) return
+
+    try {
+      const remoteEvents = await fetchRemoteEvents()
+      if (remoteEvents.length > 0) {
+        const raw = localStorage.getItem('raffle_mock_events_v1')
+        const current: EventRow[] = raw ? JSON.parse(raw) : []
+        let changed = false
+        for (const re of remoteEvents) {
+          if (!current.some((c) => c.slug === re.slug)) {
+            current.unshift(re)
+            changed = true
+          }
+        }
+        if (changed) {
+          localStorage.setItem('raffle_mock_events_v1', JSON.stringify(current))
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     const { data, error } = await supabase
       .from('events')
       .select('*')
@@ -620,7 +698,7 @@ export function HostDashboard() {
   }, [entries, search])
 
   const entryLink = selectedEvent
-    ? `${window.location.origin}${window.location.pathname}#/e/${selectedEvent.slug}`
+    ? `${window.location.origin}${window.location.pathname}#/e/${selectedEvent.slug}?name=${encodeURIComponent(selectedEvent.name)}&id=${encodeURIComponent(selectedEvent.id)}`
     : ''
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
@@ -1389,7 +1467,7 @@ export function ProjectorModePage() {
       const ev = events.find((e) => e.id === eventId) ?? null
       if (ev) {
         setEventData(ev)
-        const url = `${window.location.origin}${window.location.pathname}#/e/${ev.slug}`
+        const url = `${window.location.origin}${window.location.pathname}#/e/${ev.slug}?name=${encodeURIComponent(ev.name)}&id=${encodeURIComponent(ev.id)}`
         QRCode.toDataURL(url, {
           margin: 2,
           width: 320,

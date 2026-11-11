@@ -60,6 +60,7 @@ export async function submitEntry(
   submissionId: string,
   retryReceipt: string,
   eventId?: string,
+  eventName?: string,
 ): Promise<SubmissionResponse> {
   const client = requireSupabase()
   const validation = validateFullName(firstName, lastName)
@@ -82,6 +83,8 @@ export async function submitEntry(
       hofstraUsername: emailValidation.username,
       submissionId,
       retryReceipt,
+      eventId,
+      eventName,
     },
   })
 

@@ -1,5 +1,5 @@
 import type { SubmissionResponse } from './api'
-import { broadcastCheckIn } from './cloudSync'
+import { broadcastCheckIn, broadcastEvent } from './cloudSync'
 import { normalizeHofstraUsername } from './hofstraEmail'
 import { validateFullName } from './validation'
 
@@ -268,7 +268,19 @@ export function createMockSupabaseClient(): any {
 
         if (name === 'public-submit') {
           const events = getEvents()
-          const event = events.find((e) => e.slug === body.slug)
+          let event = events.find((e) => e.slug === body.slug)
+          if (!event && body.eventId && body.eventName) {
+            event = {
+              id: body.eventId,
+              name: body.eventName,
+              slug: body.slug,
+              status: 'open',
+              registration_open: true,
+              created_at: new Date().toISOString(),
+            }
+            events.push(event)
+            setEvents(events)
+          }
           if (!event) {
             return { data: { status: 'invalid_event' }, error: null }
           }
@@ -342,6 +354,7 @@ export function createMockSupabaseClient(): any {
         }
         events.unshift(newEvent)
         setEvents(events)
+        void broadcastEvent(newEvent)
         return { data: newEvent, error: null }
       }
 

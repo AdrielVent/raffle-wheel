@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { ProjectorModePage, HostDashboard } from './App'
 import { syncIncomingEntry } from './lib/cloudSync'
@@ -72,10 +72,14 @@ describe('End-to-End Cross-Device Wheel & Excel Verification', () => {
       </MemoryRouter>,
     )
 
-    // Verify Adriel appears in the attendance list
+    // Adriel appears in "Just checked in" and in the full check-in list
     await waitFor(() => {
-      expect(screen.getByText('Adriel Ventura')).toBeInTheDocument()
-      expect(screen.getByText('aventura2@hofstra.edu')).toBeInTheDocument()
+      const recent = screen.getByRole('list', { name: 'Just checked in' })
+      expect(within(recent).getByText('Adriel Ventura')).toBeInTheDocument()
+      const all = screen.getByRole('list', { name: 'All check-ins' })
+      expect(within(all).getByText('Adriel Ventura')).toBeInTheDocument()
+      expect(within(all).getByText('aventura2@hofstra.edu')).toBeInTheDocument()
+      expect(screen.getByText('1 checked in')).toBeInTheDocument()
     })
 
     // Verify Excel builder exports Adriel with UTC timestamp

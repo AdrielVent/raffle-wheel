@@ -82,6 +82,22 @@ function winnerIdsFromDraws(draws: Array<Pick<DrawRow, 'winner_entry_id'>>): Set
   return new Set(draws.map((d) => d.winner_entry_id).filter((id): id is string => Boolean(id)))
 }
 
+function checkInTime(entry: { checked_in_at?: string | null; created_at?: string | null }): number {
+  const t = Date.parse(entry.checked_in_at || entry.created_at || '')
+  return Number.isNaN(t) ? 0 : t
+}
+
+function timeAgo(ms: number, now: number): string {
+  if (!ms) return 'unknown'
+  const s = Math.max(0, Math.round((now - ms) / 1000))
+  if (s < 45) return 'just now'
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m} min ago`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h} hr ago`
+  return new Date(ms).toLocaleDateString()
+}
+
 function BackendRequiredMessage() {
   return (
     <div className="panel ipod-card">
@@ -720,6 +736,16 @@ export function HostDashboard() {
   const [showArchived, setShowArchived] = useState(false)
   const [actionNotice, setActionNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [exportedEventIds, setExportedEventIds] = useState<Set<string>>(() => new Set())
+  const [entryCounts, setEntryCounts] = useState<Record<string, number>>({})
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  // Responses for a previously selected event must never overwrite the current one
+  const selectedEventIdRef = useRef<string | null>(selectedEventId)
+  useEffect(() => {
+    selectedEventIdRef.current = selectedEventId
+  }, [selectedEventId])
   const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null
   const activeEvents = useMemo(() => events.filter((event) => !isArchived(event)), [events])
   const archivedEvents = useMemo(() => events.filter((event) => isArchived(event)), [events])
@@ -734,7 +760,7 @@ export function HostDashboard() {
       }
       setIsPinUnlocked(true)
       setPinError(null)
-      void refreshEvents()
+      void refreshEvents().catch(() => {})
     } else {
       setPinError('Incorrect PIN. Please enter the valid host PIN.')
     }
@@ -760,9 +786,17 @@ export function HostDashboard() {
       .select('*')
       .order('created_at', { ascending: false })
 
-    if (!error && data) {
+    if (error) throw new Error(error.message ?? 'Could not load events')
+    if (data) {
       const loaded = data as EventRow[]
       setEvents(loaded)
+      // Check-in count per event for the event cards
+      const { data: counts } = await supabase.from('entries').select('event_id')
+      if (Array.isArray(counts)) {
+        const next: Record<string, number> = {}
+        for (const row of counts as Array<{ event_id: string }>) next[row.event_id] = (next[row.event_id] ?? 0) + 1
+        setEntryCounts(next)
+      }
       setSelectedEventId((prev) => {
         if (prev && loaded.some((e) => e.id === prev)) return prev
         const saved = sessionStorage.getItem('raffle_selected_event_id')
@@ -792,14 +826,66 @@ export function HostDashboard() {
         .order('created_at', { ascending: false }),
     ])
 
-    if (!entriesResponse.error && entriesResponse.data) {
-      setEntries(entriesResponse.data as EntryRow[])
+    // The host switched events while this was loading: drop the stale result
+    if (selectedEventIdRef.current !== eventId) return
+
+    if (entriesResponse.error) throw new Error(entriesResponse.error.message ?? 'Could not load check-ins')
+    if (entriesResponse.data) {
+      const loaded = entriesResponse.data as EntryRow[]
+      setEntries(loaded)
+      setEntryCounts((prev) => (prev[eventId] === loaded.length ? prev : { ...prev, [eventId]: loaded.length }))
     }
 
     if (!drawsResponse.error && drawsResponse.data) {
       setDraws(drawsResponse.data as DrawRow[])
     }
+    setLastUpdated(new Date())
+    setRefreshError(null)
   }, [])
+
+  // One place that reloads everything: event list, counts, check-ins and draws
+  const refreshAll = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      await refreshEvents()
+      const id = selectedEventIdRef.current
+      if (id) await refreshEventDetails(id)
+      setLastUpdated(new Date())
+      setRefreshError(null)
+    } catch (err) {
+      setRefreshError(err instanceof Error ? err.message : 'Could not reach the server')
+    } finally {
+      setRefreshing(false)
+    }
+  }, [refreshEvents, refreshEventDetails])
+
+  // Keep "2 min ago" labels current
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15000)
+    return () => clearInterval(t)
+  }, [])
+
+  // iPhone suspends the app (and its live connection) in the background: reload as soon as
+  // it comes back, when the network returns, and every 15s for new events from other devices.
+  useEffect(() => {
+    if (!isPinUnlocked) return
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refreshAll()
+    }
+    const onOnline = () => void refreshAll()
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('pageshow', onVisible)
+    window.addEventListener('online', onOnline)
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshEvents().catch(() => {})
+    }, 15000)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('pageshow', onVisible)
+      window.removeEventListener('online', onOnline)
+      clearInterval(t)
+    }
+  }, [isPinUnlocked, refreshAll, refreshEvents])
 
   useEffect(() => {
     if (!supabase) return
@@ -810,7 +896,7 @@ export function HostDashboard() {
         setHostEmail(data.session?.user?.email ?? null)
       })
       .finally(async () => {
-        await refreshEvents()
+        await refreshEvents().catch(() => {})
         setSessionReady(true)
       })
 
@@ -820,7 +906,9 @@ export function HostDashboard() {
       (_event: string, session: { user?: { email?: string } } | null) => {
         setHostEmail(session?.user?.email ?? null)
         setTimeout(() => {
-          void refreshEvents().finally(() => setSessionReady(true))
+          void refreshEvents()
+            .catch(() => {})
+            .finally(() => setSessionReady(true))
         }, 0)
       },
     )
@@ -834,13 +922,12 @@ export function HostDashboard() {
     }
 
     // Fetch-on-select: state is only set after an await inside refreshEventDetails.
+    const reload = () => void refreshEventDetails(selectedEventId).catch(() => {})
     // oxlint-disable-next-line react/set-state-in-effect
-    void refreshEventDetails(selectedEventId)
+    reload()
 
     // Listen to live cross-device check-ins from phones via SSE
-    const unsubscribeCloud = subscribeToLiveCheckIns(() => {
-      void refreshEventDetails(selectedEventId)
-    }, selectedEventId)
+    const unsubscribeCloud = subscribeToLiveCheckIns(reload, selectedEventId)
 
     if (!supabase) {
       return () => {
@@ -854,28 +941,27 @@ export function HostDashboard() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'entries', filter: `event_id=eq.${selectedEventId}` },
-        () => {
-          refreshEventDetails(selectedEventId)
-        },
+        reload,
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'draws', filter: `event_id=eq.${selectedEventId}` },
-        () => {
-          refreshEventDetails(selectedEventId)
-        },
+        reload,
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'events', filter: `id=eq.${selectedEventId}` },
+        () => void refreshEvents().catch(() => {}),
       )
       .subscribe()
 
     // Polling fallback in case the realtime/SSE connection drops (common on phones and
     // captive campus Wi-Fi). Faster when a real backend is connected.
     const interval = setInterval(() => {
-      refreshEventDetails(selectedEventId)
+      if (document.visibilityState === 'visible') reload()
     }, isLiveBackendConfigured ? 10000 : 20000)
 
-    const handleSync = () => {
-      refreshEventDetails(selectedEventId)
-    }
+    const handleSync = reload
     window.addEventListener('storage', handleSync)
     window.addEventListener('raffle_demo_change', handleSync)
 
@@ -886,18 +972,26 @@ export function HostDashboard() {
       window.removeEventListener('storage', handleSync)
       window.removeEventListener('raffle_demo_change', handleSync)
     }
-  }, [selectedEventId, refreshEventDetails])
+  }, [selectedEventId, refreshEventDetails, refreshEvents])
 
   const duplicateIds = useMemo(() => findDuplicateNameIds(entries), [entries])
   const winnerIds = useMemo(() => winnerIdsFromDraws(draws), [draws])
 
+  // Newest check-ins first so the host sees who just arrived
+  const entriesNewestFirst = useMemo(() => [...entries].sort((a, b) => checkInTime(b) - checkInTime(a)), [entries])
+  const eligibleCount = useMemo(
+    () => entries.filter((entry) => !entry.ineligible && !(removeWinners && winnerIds.has(entry.id))).length,
+    [entries, removeWinners, winnerIds],
+  )
+  const recentCheckIns = entriesNewestFirst.slice(0, 5)
+
   const filteredEntries = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase()
-    if (!needle) return entries
-    return entries.filter((entry) =>
+    if (!needle) return entriesNewestFirst
+    return entriesNewestFirst.filter((entry) =>
       `${entry.first_name} ${entry.last_name} ${entry.hofstra_email}`.toLocaleLowerCase().includes(needle),
     )
-  }, [entries, search])
+  }, [entriesNewestFirst, search])
 
   const entryLink = selectedEvent ? buildCheckInUrl(selectedEvent) : ''
 
@@ -984,8 +1078,7 @@ export function HostDashboard() {
   async function runHostAction(action: () => Promise<unknown>, success?: string) {
     try {
       await action()
-      await refreshEvents()
-      if (selectedEventId) await refreshEventDetails(selectedEventId)
+      await refreshAll()
       setActionNotice(success ? { tone: 'ok', text: success } : null)
     } catch (err) {
       setActionNotice({
@@ -1328,13 +1421,32 @@ export function HostDashboard() {
           <h1>Host Dashboard</h1>
           <p className="subtitle">Manage raffle events and attendance records</p>
         </div>
-        <div className="row wrap">
-          <button className="button secondary" type="button" onClick={handleLock}>
-            🔒 Lock
-          </button>
-          <Link className="button secondary" to="/">
-            Home
-          </Link>
+        <div className="host-header-actions">
+          <div className="row wrap">
+            <button
+              className="button refresh-all"
+              type="button"
+              onClick={() => void refreshAll()}
+              disabled={refreshing}
+              aria-label="Refresh events and check-ins"
+            >
+              <span className={refreshing ? 'spin-icon spinning' : 'spin-icon'} aria-hidden="true">↻</span>
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <button className="button secondary" type="button" onClick={handleLock}>
+              🔒 Lock
+            </button>
+            <Link className="button secondary" to="/">
+              Home
+            </Link>
+          </div>
+          <p className={`last-updated ${refreshError ? 'error' : ''}`} role="status" aria-live="polite">
+            {refreshError
+              ? `Couldn't refresh: ${refreshError}. Check your connection and tap Refresh.`
+              : lastUpdated
+                ? `Auto-updating · last updated ${lastUpdated.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`
+                : 'Loading…'}
+          </p>
         </div>
       </header>
 
@@ -1448,7 +1560,13 @@ export function HostDashboard() {
                   type="button"
                 >
                   <strong>{event.name}</strong>
-                  <span className={`status-badge status-${event.status}`}>{event.status}</span>
+                  <span className="event-card-meta">
+                    <span className={`status-badge status-${event.status}`}>{event.status}</span>
+                    <span className="event-card-count">
+                      {entryCounts[event.id] ?? 0} checked in
+                    </span>
+                  </span>
+                  <span className="event-card-date">Created {new Date(event.created_at).toLocaleDateString()}</span>
                 </button>
               ))}
             </div>
@@ -1473,7 +1591,10 @@ export function HostDashboard() {
                       type="button"
                     >
                       <strong>{event.name}</strong>
-                      <span className="status-badge status-archived">archived</span>
+                      <span className="event-card-meta">
+                        <span className="status-badge status-archived">archived</span>
+                        <span className="event-card-count">{entryCounts[event.id] ?? 0} checked in</span>
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -1485,6 +1606,69 @@ export function HostDashboard() {
 
       {selectedEvent && (
         <>
+          <section className="panel ipod-card event-overview" aria-label="Event overview">
+            <div className="ipod-screen-bar">
+              <span>Event Overview</span>
+              <span className="ipod-battery-icon" />
+            </div>
+            <div className="ipod-card-content">
+              <div className="row wrap space-between align-center">
+                <h2>{selectedEvent.name}</h2>
+                <span className={`status-badge status-${isArchived(selectedEvent) ? 'archived' : selectedEvent.status}`}>
+                  {isArchived(selectedEvent)
+                    ? 'archived'
+                    : selectedEvent.status === 'open' && selectedEvent.registration_open
+                      ? 'check-in open'
+                      : selectedEvent.status}
+                </span>
+              </div>
+              <p className="subtitle">Created {new Date(selectedEvent.created_at).toLocaleString()}</p>
+              <div className="stat-grid">
+                <div className="stat-tile">
+                  <span className="stat-value">{entries.length}</span>
+                  <span className="stat-label">Checked in</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-value">{eligibleCount}</span>
+                  <span className="stat-label">On the wheel</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-value">{draws.filter((d) => d.winner_entry_id).length}</span>
+                  <span className="stat-label">Winners drawn</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-value stat-small">
+                    {recentCheckIns[0] ? timeAgo(checkInTime(recentCheckIns[0]), now) : '—'}
+                  </span>
+                  <span className="stat-label">Last check-in</span>
+                </div>
+              </div>
+              <h3 className="recent-title">Just checked in</h3>
+              {recentCheckIns.length === 0 ? (
+                <p className="empty-text">
+                  No check-ins yet. Show the QR code below. New people appear here automatically.
+                </p>
+              ) : (
+                <ol className="recent-list" aria-label="Just checked in">
+                  {recentCheckIns.map((entry) => {
+                    const isNew = now - checkInTime(entry) < 5 * 60_000
+                    return (
+                      <li key={entry.id} className={isNew ? 'recent-new' : ''}>
+                        <span className="recent-name">
+                          <span>
+                            {entry.first_name} {entry.last_name}
+                          </span>
+                          {isNew && <span className="badge-new">NEW</span>}
+                        </span>
+                        <span className="recent-time">{timeAgo(checkInTime(entry), now)}</span>
+                      </li>
+                    )
+                  })}
+                </ol>
+              )}
+            </div>
+          </section>
+
           <section className="panel ipod-card two-col">
             <div>
               <div className="ipod-screen-bar">
@@ -1562,6 +1746,170 @@ export function HostDashboard() {
             </div>
             <div className="qr-wrap">
               {qrDataUrl && <img src={qrDataUrl} alt={`QR code for ${selectedEvent.name}`} />}
+            </div>
+          </section>
+
+          <section className="panel ipod-card">
+            <div className="ipod-screen-bar">
+              <span>Attendance Records</span>
+              <span className="ipod-battery-icon" />
+            </div>
+            <div className="ipod-card-content">
+              <div className="section-header-row">
+                <h2>Check-Ins ({entries.length})</h2>
+                <div className="row wrap">
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => void refreshAll()}
+                    disabled={refreshing}
+                    title="Refresh check-ins"
+                  >
+                    {refreshing ? 'Refreshing…' : '↻ Refresh'}
+                  </button>
+                  <a
+                    className="button secondary"
+                    href="https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/edit?usp=sharing"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open connected Google Sheet"
+                  >
+                    Google Sheet ↗
+                  </a>
+                  <button
+                    className="button danger"
+                    type="button"
+                    onClick={onDeleteAllEntries}
+                    disabled={entries.length === 0}
+                  >
+                    Delete All
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => void onDownloadExcel()}
+                    disabled={exporting}
+                  >
+                    {exporting ? 'Exporting…' : 'Download Excel (.xlsx)'}
+                  </button>
+                </div>
+              </div>
+              <input
+                className="search-input"
+                placeholder="Search by name or Hofstra email…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <p className="list-hint">Newest first · updates automatically</p>
+              {entries.length === 0 ? (
+                <p className="empty-text">No one has checked in yet.</p>
+              ) : filteredEntries.length === 0 ? (
+                <p className="empty-text">No participants match the search.</p>
+              ) : (
+                <ul className="entry-list" aria-label="All check-ins">
+                  {filteredEntries.map((entry) => (
+                    <li
+                      key={entry.id}
+                      className={`${entry.ineligible ? 'entry-ineligible' : ''} ${winnerIds.has(entry.id) ? 'entry-winner' : ''}`}
+                    >
+                      <div className="entry-info">
+                        <span className="entry-name-row">
+                          <span className="entry-number">#{entries.length - entriesNewestFirst.indexOf(entry)}</span>
+                          <strong>
+                            {entry.first_name} {entry.last_name}
+                          </strong>
+                        </span>
+                        <span className="entry-email">{entry.hofstra_email}</span>
+                        <span className="entry-meta">
+                          Checked in:{' '}
+                          {entry.checked_in_at || entry.created_at
+                            ? `${new Date(checkInTime(entry)).toLocaleString()} (${timeAgo(checkInTime(entry), now)})`
+                            : 'Unknown'}
+                        </span>
+                        {duplicateIds.has(entry.id) && (
+                          <span className="badge-warning">Matching name on file</span>
+                        )}
+                        {winnerIds.has(entry.id) ? (
+                          <span className="badge-winner">🏆 Raffle winner — highlighted yellow in Excel</span>
+                        ) : (
+                          entry.ineligible && <span className="badge-excluded">Excluded from raffle</span>
+                        )}
+                      </div>
+                      <div className="entry-actions">
+                        <button
+                          className="button secondary"
+                          type="button"
+                          onClick={() => onToggleEligibility(entry.id, !entry.ineligible)}
+                        >
+                          {entry.ineligible ? 'Re-admit' : 'Exclude'}
+                        </button>
+                        <button
+                          className="button danger-text"
+                          type="button"
+                          onClick={() => onDeleteEntry(entry.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+
+          <section className="panel ipod-card">
+            <div className="ipod-screen-bar">
+              <span>Drawing Controls</span>
+              <span className="ipod-battery-icon" />
+            </div>
+            <div className="ipod-card-content">
+              <h2>Raffle Drawing</h2>
+              <div className="row wrap">
+                <label className="inline-control">
+                  <input
+                    type="checkbox"
+                    checked={removeWinners}
+                    onChange={(e) => {
+                      setRemoveWinners(e.target.checked)
+                      localStorage.setItem(
+                        getPreferenceKey(selectedEvent.id, 'removeWinners'),
+                        e.target.checked ? '1' : '0',
+                      )
+                    }}
+                  />
+                  Remove winners from future draws
+                </label>
+                <button
+                  className="button primary-action"
+                  type="button"
+                  onClick={onDraw}
+                  disabled={drawing || selectedEvent.status === 'ended'}
+                >
+                  {drawing ? 'Drawing…' : 'Run Draw'}
+                </button>
+              </div>
+              {lastWinner && <p className="winner-callout">{lastWinner}</p>}
+              <div className="draw-history">
+                <h3>Drawing History</h3>
+                {draws.length === 0 ? (
+                  <p className="empty-text">No drawings conducted yet.</p>
+                ) : (
+                  <ol className="draw-list">
+                    {draws.map((draw) => (
+                      <li key={draw.id}>
+                        <span className="draw-time">{new Date(draw.created_at).toLocaleString()}</span>
+                        <strong className="draw-winner">
+                          {draw.winner_first_name
+                            ? `${draw.winner_first_name} ${draw.winner_last_name}`
+                            : 'No eligible winner'}
+                        </strong>
+                        {draw.remove_winner && <em className="tag-removed">removed from future</em>}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
             </div>
           </section>
 
@@ -1683,167 +2031,6 @@ export function HostDashboard() {
                   Open Drive Folder ↗
                 </a>
               </div>
-            </div>
-          </section>
-
-          <section className="panel ipod-card">
-            <div className="ipod-screen-bar">
-              <span>Drawing Controls</span>
-              <span className="ipod-battery-icon" />
-            </div>
-            <div className="ipod-card-content">
-              <h2>Raffle Drawing</h2>
-              <div className="row wrap">
-                <label className="inline-control">
-                  <input
-                    type="checkbox"
-                    checked={removeWinners}
-                    onChange={(e) => {
-                      setRemoveWinners(e.target.checked)
-                      localStorage.setItem(
-                        getPreferenceKey(selectedEvent.id, 'removeWinners'),
-                        e.target.checked ? '1' : '0',
-                      )
-                    }}
-                  />
-                  Remove winners from future draws
-                </label>
-                <button
-                  className="button primary-action"
-                  type="button"
-                  onClick={onDraw}
-                  disabled={drawing || selectedEvent.status === 'ended'}
-                >
-                  {drawing ? 'Drawing…' : 'Run Draw'}
-                </button>
-              </div>
-              {lastWinner && <p className="winner-callout">{lastWinner}</p>}
-              <div className="draw-history">
-                <h3>Drawing History</h3>
-                {draws.length === 0 ? (
-                  <p className="empty-text">No drawings conducted yet.</p>
-                ) : (
-                  <ol className="draw-list">
-                    {draws.map((draw) => (
-                      <li key={draw.id}>
-                        <span className="draw-time">{new Date(draw.created_at).toLocaleString()}</span>
-                        <strong className="draw-winner">
-                          {draw.winner_first_name
-                            ? `${draw.winner_first_name} ${draw.winner_last_name}`
-                            : 'No eligible winner'}
-                        </strong>
-                        {draw.remove_winner && <em className="tag-removed">removed from future</em>}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className="panel ipod-card">
-            <div className="ipod-screen-bar">
-              <span>Attendance Records</span>
-              <span className="ipod-battery-icon" />
-            </div>
-            <div className="ipod-card-content">
-              <div className="section-header-row">
-                <h2>Attendance & Participants ({entries.length})</h2>
-                <div className="row wrap">
-                  <button
-                    className="button secondary"
-                    type="button"
-                    onClick={() => {
-                      if (selectedEventId) {
-                        void refreshEventDetails(selectedEventId)
-                      }
-                    }}
-                    title="Refresh attendance records from cloud"
-                  >
-                    🔄 Refresh
-                  </button>
-                  <a
-                    className="button secondary"
-                    href="https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/edit?usp=sharing"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open connected Google Sheet"
-                  >
-                    Google Sheet ↗
-                  </a>
-                  <button
-                    className="button danger"
-                    type="button"
-                    onClick={onDeleteAllEntries}
-                    disabled={entries.length === 0}
-                  >
-                    Delete All
-                  </button>
-                  <button
-                    className="button secondary"
-                    type="button"
-                    onClick={() => void onDownloadExcel()}
-                    disabled={exporting}
-                  >
-                    {exporting ? 'Exporting…' : 'Download Excel (.xlsx)'}
-                  </button>
-                </div>
-              </div>
-              <input
-                className="search-input"
-                placeholder="Search by name or Hofstra email…"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-              {filteredEntries.length === 0 ? (
-                <p className="empty-text">No participants match the search.</p>
-              ) : (
-                <ul className="entry-list">
-                  {filteredEntries.map((entry) => (
-                    <li
-                      key={entry.id}
-                      className={`${entry.ineligible ? 'entry-ineligible' : ''} ${winnerIds.has(entry.id) ? 'entry-winner' : ''}`}
-                    >
-                      <div className="entry-info">
-                        <strong>
-                          {entry.first_name} {entry.last_name}
-                        </strong>
-                        <span className="entry-email">{entry.hofstra_email}</span>
-                        <span className="entry-meta">
-                          Checked in:{' '}
-                          {entry.checked_in_at
-                            ? new Date(entry.checked_in_at).toLocaleString()
-                            : 'Unknown'}
-                        </span>
-                        {duplicateIds.has(entry.id) && (
-                          <span className="badge-warning">Matching name on file</span>
-                        )}
-                        {winnerIds.has(entry.id) ? (
-                          <span className="badge-winner">🏆 Raffle winner — highlighted yellow in Excel</span>
-                        ) : (
-                          entry.ineligible && <span className="badge-excluded">Excluded from raffle</span>
-                        )}
-                      </div>
-                      <div className="entry-actions">
-                        <button
-                          className="button secondary"
-                          type="button"
-                          onClick={() => onToggleEligibility(entry.id, !entry.ineligible)}
-                        >
-                          {entry.ineligible ? 'Re-admit' : 'Exclude'}
-                        </button>
-                        <button
-                          className="button danger-text"
-                          type="button"
-                          onClick={() => onDeleteEntry(entry.id)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
             </div>
           </section>
         </>

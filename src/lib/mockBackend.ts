@@ -316,7 +316,7 @@ export function createMockSupabaseClient(): any {
           void broadcastCheckIn(newEntry)
 
           return {
-            data: { status: 'accepted', receipt_id: receiptId } as SubmissionResponse,
+            data: { status: 'accepted', receipt_id: receiptId, event_id: event.id } as SubmissionResponse,
             error: null,
           }
         }

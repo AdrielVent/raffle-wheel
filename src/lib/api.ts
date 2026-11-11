@@ -24,6 +24,7 @@ export type SubmissionResponse = {
     | 'invalid_email'
     | 'rate_limited'
   receipt_id?: string
+  event_id?: string
 }
 
 function requireSupabase() {
@@ -58,6 +59,7 @@ export async function submitEntry(
   hofstraUsernameInput: string,
   submissionId: string,
   retryReceipt: string,
+  eventId?: string,
 ): Promise<SubmissionResponse> {
   const client = requireSupabase()
   const validation = validateFullName(firstName, lastName)
@@ -91,7 +93,7 @@ export async function submitEntry(
   if (response?.status === 'accepted') {
     void broadcastCheckIn({
       id: submissionId,
-      event_id: 'evt-nasa-2026',
+      event_id: response?.event_id || eventId || 'evt-nasa-2026',
       first_name: validation.first.value,
       last_name: validation.last.value,
       hofstra_email: `${emailValidation.username.toLowerCase()}@hofstra.edu`,

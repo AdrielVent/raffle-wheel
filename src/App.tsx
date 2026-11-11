@@ -237,6 +237,7 @@ export function AttendeePage() {
         emailValidation.username,
         submissionId,
         retryReceipt,
+        eventState.id,
       )
 
       if (response.status === 'accepted' || response.status === 'duplicate') {
@@ -292,7 +293,7 @@ export function AttendeePage() {
       <main className="container narrow confirmation-screen">
         <div className="panel ipod-card confirmation-card">
           <div className="ipod-screen-bar">
-            <span>NASA Check-In</span>
+            <span>{confirmed.eventName.toLowerCase().includes('nasa') ? 'NASA Check-In' : 'Event Check-In'}</span>
             <span className="ipod-battery-icon" />
           </div>
           <div className="ipod-card-content confirmation-body">
@@ -302,7 +303,9 @@ export function AttendeePage() {
               </svg>
             </div>
             <h1 ref={headingRef} tabIndex={-1} className="confirmation-heading">
-              Thank you for attending the NASA event!
+              {confirmed.eventName.toLowerCase().includes('nasa')
+                ? 'Thank you for attending the NASA event!'
+                : `Thank you for attending ${confirmed.eventName}!`}
             </h1>
             <p className="confirmation-greeting">
               You’re checked in, {confirmed.firstName}, and entered into the raffle.
@@ -659,9 +662,12 @@ export function HostDashboard() {
   async function onCreateEvent(event: FormEvent) {
     event.preventDefault()
     if (!newEventName.trim()) return
-    await createEvent(newEventName)
+    const created = await createEvent(newEventName)
     setNewEventName('')
     await refreshEvents()
+    if (created && typeof created === 'object' && 'id' in created) {
+      setSelectedEventId(created.id as string)
+    }
   }
 
   async function onToggleEligibility(entryId: string, ineligible: boolean) {
@@ -969,11 +975,14 @@ export function HostDashboard() {
         </div>
         <div className="ipod-card-content">
           <h2>Create Event</h2>
+          <p className="subtitle">
+            Add as many events as you need. Each event automatically generates its own unique QR code, check-in link, attendance log, and dedicated spinning raffle wheel.
+          </p>
           <form className="row wrap" onSubmit={onCreateEvent}>
             <input
               value={newEventName}
               onChange={(e) => setNewEventName(e.target.value)}
-              placeholder="Event Name (e.g. NASA Tech Expo)"
+              placeholder="Event Name (e.g. Science Fair, Tech Expo, Meeting #1)"
               required
             />
             <button className="button" type="submit">

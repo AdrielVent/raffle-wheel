@@ -1,5 +1,12 @@
 import type { SubmissionResponse } from './api'
-import { broadcastCheckIn, broadcastEvent } from './cloudSync'
+import {
+  broadcastCheckIn,
+  broadcastDraw,
+  broadcastEvent,
+  clearEventCloudSync,
+  fetchRemoteCheckIns,
+  markEntryDeleted,
+} from './cloudSync'
 import { normalizeHofstraUsername } from './hofstraEmail'
 import { validateFullName } from './validation'
 
@@ -10,6 +17,9 @@ export type MockEventRow = {
   status: 'open' | 'closed' | 'ended'
   registration_open: boolean
   created_at: string
+  updated_at?: string
+  ended_at?: string | null
+  archived_at?: string | null
 }
 
 export type MockEntryRow = {
@@ -39,69 +49,31 @@ const STORAGE_KEY_EVENTS = 'raffle_mock_events_v1'
 const STORAGE_KEY_ENTRIES = 'raffle_mock_entries_v1'
 const STORAGE_KEY_DRAWS = 'raffle_mock_draws_v1'
 
-const initialEvents: MockEventRow[] = [
-  {
-    id: 'evt-nasa-2026',
-    name: 'NASA Space Apps Challenge',
-    slug: 'nasa-space-apps',
-    status: 'open',
-    registration_open: true,
-    created_at: '2026-11-05T12:00:00.000Z',
-  },
+// No built-in events: every event is created by the host, and its wheel and attendance
+// sheet only ever contain people who checked in through that event's own QR code.
+const initialEvents: MockEventRow[] = []
+
+// Older builds shipped a pre-made "NASA Space Apps Challenge" draft event. It is removed
+// (with its draft check-ins and draws) from devices that still have it.
+const LEGACY_DRAFT_EVENT = { id: 'evt-nasa-2026', slug: 'nasa-space-apps' }
+
+// No sample attendees: only people who check in through an event's QR code belong on
+// that event's wheel and in its attendance sheet.
+const initialEntries: MockEntryRow[] = []
+
+// Older builds pre-filled the NASA event with five made-up attendees. Remove exactly those
+// rows (matched on both their seed id and sample email) from devices that still have them.
+const LEGACY_SAMPLE_ROWS: Array<[string, string]> = [
+  ['entry-1', 'arivera@hofstra.edu'],
+  ['entry-2', 'schen2@hofstra.edu'],
+  ['entry-3', 'jtaylor@hofstra.edu'],
+  ['entry-4', 'mpatel@hofstra.edu'],
+  ['entry-5', 'coconnor@hofstra.edu'],
 ]
 
-const initialEntries: MockEntryRow[] = [
-  {
-    id: 'entry-1',
-    event_id: 'evt-nasa-2026',
-    first_name: 'Alex',
-    last_name: 'Rivera',
-    hofstra_email: 'arivera@hofstra.edu',
-    ineligible: false,
-    checked_in_at: '2026-11-05T12:05:00.000Z',
-    created_at: '2026-11-05T12:05:00.000Z',
-  },
-  {
-    id: 'entry-2',
-    event_id: 'evt-nasa-2026',
-    first_name: 'Sam',
-    last_name: 'Chen',
-    hofstra_email: 'schen2@hofstra.edu',
-    ineligible: false,
-    checked_in_at: '2026-11-05T12:08:00.000Z',
-    created_at: '2026-11-05T12:08:00.000Z',
-  },
-  {
-    id: 'entry-3',
-    event_id: 'evt-nasa-2026',
-    first_name: 'Jordan',
-    last_name: 'Taylor',
-    hofstra_email: 'jtaylor@hofstra.edu',
-    ineligible: false,
-    checked_in_at: '2026-11-05T12:12:00.000Z',
-    created_at: '2026-11-05T12:12:00.000Z',
-  },
-  {
-    id: 'entry-4',
-    event_id: 'evt-nasa-2026',
-    first_name: 'Morgan',
-    last_name: 'Patel',
-    hofstra_email: 'mpatel@hofstra.edu',
-    ineligible: false,
-    checked_in_at: '2026-11-05T12:15:00.000Z',
-    created_at: '2026-11-05T12:15:00.000Z',
-  },
-  {
-    id: 'entry-5',
-    event_id: 'evt-nasa-2026',
-    first_name: 'Casey',
-    last_name: "O'Connor",
-    hofstra_email: 'coconnor@hofstra.edu',
-    ineligible: false,
-    checked_in_at: '2026-11-05T12:18:00.000Z',
-    created_at: '2026-11-05T12:18:00.000Z',
-  },
-]
+export function isLegacySampleEntry(entry: { id: string; hofstra_email?: string | null }): boolean {
+  return LEGACY_SAMPLE_ROWS.some(([id, email]) => entry.id === id && entry.hofstra_email === email)
+}
 
 function getStored<T>(key: string, fallback: T): T {
   try {
@@ -140,6 +112,23 @@ function notifyListeners(payload?: any) {
   }
 }
 
+/** Unbiased index in [0, count) via rejection sampling over crypto.getRandomValues. */
+export function uniformRandomIndex(count: number): number {
+  if (count <= 0) throw new Error('Count must be positive')
+  const range = 0x100000000
+  const limit = range - (range % count)
+  const buf = new Uint32Array(1)
+  for (;;) {
+    crypto.getRandomValues(buf)
+    if (buf[0] < limit) return buf[0] % count
+  }
+}
+
+function touch(event: MockEventRow): MockEventRow {
+  event.updated_at = new Date().toISOString()
+  return event
+}
+
 export function createMockSupabaseClient(): any {
   // Initialize mock data if empty
   if (!localStorage.getItem(STORAGE_KEY_EVENTS)) {
@@ -150,6 +139,34 @@ export function createMockSupabaseClient(): any {
   }
   if (!localStorage.getItem(STORAGE_KEY_DRAWS)) {
     setStored(STORAGE_KEY_DRAWS, [])
+  }
+  {
+    const events = getStored<MockEventRow[]>(STORAGE_KEY_EVENTS, [])
+    const isDraft = (e: MockEventRow) => e.id === LEGACY_DRAFT_EVENT.id && e.slug === LEGACY_DRAFT_EVENT.slug
+    if (events.some(isDraft)) {
+      setStored(STORAGE_KEY_EVENTS, events.filter((e) => !isDraft(e)))
+      setStored(
+        STORAGE_KEY_ENTRIES,
+        getStored<MockEntryRow[]>(STORAGE_KEY_ENTRIES, []).filter((e) => e.event_id !== LEGACY_DRAFT_EVENT.id),
+      )
+      setStored(
+        STORAGE_KEY_DRAWS,
+        getStored<MockDrawRow[]>(STORAGE_KEY_DRAWS, []).filter((d) => d.event_id !== LEGACY_DRAFT_EVENT.id),
+      )
+    }
+  }
+  {
+    const stored = getStored<MockEntryRow[]>(STORAGE_KEY_ENTRIES, [])
+    const cleaned = stored.filter((e) => !isLegacySampleEntry(e))
+    if (cleaned.length !== stored.length) {
+      setStored(STORAGE_KEY_ENTRIES, cleaned)
+      const sampleIds = new Set(stored.filter(isLegacySampleEntry).map((e) => e.id))
+      const draws = getStored<MockDrawRow[]>(STORAGE_KEY_DRAWS, [])
+      setStored(
+        STORAGE_KEY_DRAWS,
+        draws.filter((d) => !d.winner_entry_id || !sampleIds.has(d.winner_entry_id)),
+      )
+    }
   }
 
   function getEvents(): MockEventRow[] {
@@ -259,7 +276,12 @@ export function createMockSupabaseClient(): any {
       invoke: async (name: string, { body }: { body: any }) => {
         if (name === 'public-event') {
           const events = getEvents()
-          const event = events.find((e) => e.slug === body.slug) ?? null
+          // Prefer the id carried in the QR code: a projector that hasn't synced yet may
+          // briefly show a QR with a placeholder slug.
+          const event =
+            (body.eventId && events.find((e) => e.id === body.eventId)) ||
+            events.find((e) => e.slug === body.slug) ||
+            null
           return {
             data: { event: event ? { ...event } : null },
             error: null,
@@ -268,7 +290,9 @@ export function createMockSupabaseClient(): any {
 
         if (name === 'public-submit') {
           const events = getEvents()
-          let event = events.find((e) => e.slug === body.slug)
+          let event =
+            (body.eventId && events.find((e) => e.id === body.eventId)) ||
+            events.find((e) => e.slug === body.slug)
           if (!event && body.eventId && body.eventName) {
             event = {
               id: body.eventId,
@@ -283,6 +307,9 @@ export function createMockSupabaseClient(): any {
           }
           if (!event) {
             return { data: { status: 'invalid_event' }, error: null }
+          }
+          if (event.status === 'ended' || event.archived_at) {
+            return { data: { status: 'ended' }, error: null }
           }
           if (event.status !== 'open' || !event.registration_open) {
             return { data: { status: 'closed' }, error: null }
@@ -306,6 +333,16 @@ export function createMockSupabaseClient(): any {
             (e) => e.event_id === event.id && e.hofstra_email.toLocaleLowerCase() === normalizedEmail,
           )
           if (existing) {
+            return { data: { status: 'already_checked_in' }, error: null }
+          }
+
+          // Cross-device duplicate check: someone may have checked in with this email on another phone
+          const remote = await fetchRemoteCheckIns(event.id)
+          if (
+            remote.some(
+              (e) => e.event_id === event.id && e.hofstra_email.toLocaleLowerCase().trim() === normalizedEmail,
+            )
+          ) {
             return { data: { status: 'already_checked_in' }, error: null }
           }
 
@@ -344,13 +381,18 @@ export function createMockSupabaseClient(): any {
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/(^-|-$)/g, '')
+        const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 6)
+        const now = new Date().toISOString()
         const newEvent: MockEventRow = {
           id: `evt-${crypto.randomUUID()}`,
           name: args.p_name.trim(),
-          slug: `${slug}-${Math.floor(Math.random() * 1000)}`,
+          slug: `${slug || 'event'}-${suffix}`,
           status: 'open',
           registration_open: true,
-          created_at: new Date().toISOString(),
+          created_at: now,
+          updated_at: now,
+          ended_at: null,
+          archived_at: null,
         }
         events.unshift(newEvent)
         setEvents(events)
@@ -361,9 +403,13 @@ export function createMockSupabaseClient(): any {
       if (name === 'set_event_registration') {
         const events = getEvents()
         const target = events.find((e) => e.id === args.p_event_id)
-        if (target) {
+        if (!target) return { data: null, error: new Error('Event not found') }
+        if (target.status !== 'ended') {
           target.registration_open = Boolean(args.p_registration_open)
+          target.status = target.registration_open ? 'open' : 'closed'
+          touch(target)
           setEvents(events)
+          void broadcastEvent(target)
         }
         return { data: null, error: null }
       }
@@ -371,20 +417,49 @@ export function createMockSupabaseClient(): any {
       if (name === 'end_raffle_event') {
         const events = getEvents()
         const target = events.find((e) => e.id === args.p_event_id)
-        if (target) {
-          target.status = 'ended'
-          setEvents(events)
-        }
+        if (!target) return { data: null, error: new Error('Event not found') }
+        target.status = 'ended'
+        target.registration_open = false
+        target.ended_at = target.ended_at ?? new Date().toISOString()
+        touch(target)
+        setEvents(events)
+        void broadcastEvent(target)
         return { data: null, error: null }
       }
 
+      if (name === 'archive_raffle_event') {
+        const events = getEvents()
+        const target = events.find((e) => e.id === args.p_event_id)
+        if (!target) return { data: null, error: new Error('Event not found') }
+        const now = new Date().toISOString()
+        if (args.p_archived) {
+          // Archiving locks check-ins and draws but keeps attendance and draw history
+          target.status = 'ended'
+          target.registration_open = false
+          target.ended_at = target.ended_at ?? now
+          target.archived_at = now
+        } else {
+          target.archived_at = null
+        }
+        touch(target)
+        setEvents(events)
+        void broadcastEvent(target)
+        return { data: { ...target }, error: null }
+      }
+
       if (name === 'clear_event_entries') {
+        // Also records a clear marker + relay broadcast so replays never bring entries back
+        await clearEventCloudSync(args.p_event_id)
         const entries = getEntries().filter((e) => e.event_id !== args.p_event_id)
         setEntries(entries)
         return { data: null, error: null }
       }
 
       if (name === 'delete_event_data') {
+        const doomed = getEvents().find((e) => e.id === args.p_event_id)
+        if (doomed) {
+          void broadcastEvent({ ...touch({ ...doomed }), deleted_at: new Date().toISOString() } as any)
+        }
         const events = getEvents().filter((e) => e.id !== args.p_event_id)
         const entries = getEntries().filter((e) => e.event_id !== args.p_event_id)
         const draws = getDraws().filter((d) => d.event_id !== args.p_event_id)
@@ -405,21 +480,25 @@ export function createMockSupabaseClient(): any {
       }
 
       if (name === 'delete_entry_record') {
+        const doomed = getEntries().find((e) => e.id === args.p_entry_id)
+        if (doomed) markEntryDeleted(doomed.event_id, doomed.hofstra_email)
         const entries = getEntries().filter((e) => e.id !== args.p_entry_id)
         setEntries(entries)
         return { data: null, error: null }
       }
 
       if (name === 'run_event_draw') {
+        const event = getEvents().find((e) => e.id === args.p_event_id)
+        if (event && (event.status === 'ended' || event.archived_at)) {
+          return { data: { status: 'ended' }, error: null }
+        }
         const entries = getEntries()
         const eligible = entries.filter((e) => e.event_id === args.p_event_id && !e.ineligible)
         if (eligible.length === 0) {
           return { data: { status: 'empty' }, error: null }
         }
 
-        const randBuffer = new Uint32Array(1)
-        crypto.getRandomValues(randBuffer)
-        const winnerIndex = randBuffer[0] % eligible.length
+        const winnerIndex = uniformRandomIndex(eligible.length)
         const winner = eligible[winnerIndex]
 
         if (args.p_remove_winner) {
@@ -447,6 +526,7 @@ export function createMockSupabaseClient(): any {
         }
         draws.unshift(newDraw)
         setDraws(draws, newDraw)
+        void broadcastDraw(newDraw as any)
 
         return {
           data: {

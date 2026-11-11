@@ -1077,3 +1077,77 @@ input[type='checkbox'] {
     flex-wrap: wrap;
   }
 }
+
+/* ==========================================================================
+   Event archiving & end-of-event wrap-up
+   ========================================================================== */
+.state-banner.success {
+  background: #e9f8ee;
+  border-color: #b7e4c7;
+  color: #135c2c;
+}
+
+.status-badge.status-archived {
+  background: #ede7f6;
+  color: #4a2c82;
+}
+
+.event-card.archived {
+  opacity: 0.85;
+  background: linear-gradient(180deg, #f7f7f9 0%, #eeeef2 100%);
+}
+
+.archived-events {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  align-items: flex-start;
+}
+
+.archived-events .event-grid {
+  width: 100%;
+}
+
+.wrap-up-steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: #3a3a3c;
+}
+
+.wrap-up-steps code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  background: #f2f2f7;
+  border: 1px solid #e0e0e6;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  word-break: break-all;
+}
+
+.done-tag {
+  color: #137333;
+  font-weight: 700;
+}
+
+/* Raffle winners: matches the yellow fill in the Excel / Google Sheet export */
+.entry-list li.entry-winner,
+.entry-list li.entry-winner:hover {
+  background: #fff9c4;
+  opacity: 1;
+}
+
+.badge-winner {
+  display: inline-block;
+  background: #ffeb3b;
+  color: #3e3200;
+  font-size: 0.725rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  width: fit-content;
+  font-weight: 700;
+}

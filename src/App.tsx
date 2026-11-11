@@ -13,6 +13,7 @@ import {
 } from 'react-router-dom'
 import './App.css'
 import {
+  archiveEvent,
   clearEntries,
   createEvent,
   deleteEntryRecord,
@@ -24,21 +25,21 @@ import {
   setRegistration,
   submitEntry,
 } from './lib/api'
-import { isBackendConfigured } from './lib/env'
+import { isBackendConfigured, isLiveBackendConfigured } from './lib/env'
 import { findDuplicateNameIds } from './lib/duplicates'
 import {
-  clearEventCloudSync,
-  fetchRemoteEvents,
+  cloudRelayEnabled,
+  mergeRemoteEvents,
   subscribeToLiveCheckIns,
   syncAllRemoteCheckIns,
-  syncIncomingEntry,
 } from './lib/cloudSync'
-import { downloadAttendanceExcel } from './lib/excel'
+import { buildAttendanceClipboard, downloadAttendanceExcel } from './lib/excel'
 import { getPreferenceKey, getReceiptKey } from './lib/storage'
 import { supabase } from './lib/supabase'
 import { normalizeHofstraUsername } from './lib/hofstraEmail'
 import { validateFullName } from './lib/validation'
-import { computeWheelRotation } from './lib/wheel'
+import { WHEEL_SPIN_MS, nextWheelRotation, sliceLabelAngle } from './lib/wheel'
+import { SHPE_DRIVE_FOLDER_URL, buildCheckInUrl, isArchived } from './lib/events'
 
 export type EventRow = {
   id: string
@@ -47,6 +48,9 @@ export type EventRow = {
   status: 'open' | 'closed' | 'ended'
   registration_open: boolean
   created_at: string
+  updated_at?: string
+  ended_at?: string | null
+  archived_at?: string | null
 }
 
 export type EntryRow = {
@@ -71,6 +75,11 @@ export type DrawRow = {
   remove_winner: boolean
   created_at: string
   snapshot: Array<{ id: string; first_name: string; last_name: string; ineligible: boolean }>
+}
+
+/** Entry ids picked by the wheel across all of an event's draws. */
+function winnerIdsFromDraws(draws: Array<Pick<DrawRow, 'winner_entry_id'>>): Set<string> {
+  return new Set(draws.map((d) => d.winner_entry_id).filter((id): id is string => Boolean(id)))
 }
 
 function BackendRequiredMessage() {
@@ -99,25 +108,7 @@ function HomePage() {
 
   const loadEvents = useCallback(async () => {
     if (!supabase) return
-    try {
-      const remote = await fetchRemoteEvents()
-      if (remote.length > 0) {
-        const raw = localStorage.getItem('raffle_mock_events_v1')
-        const current: EventRow[] = raw ? JSON.parse(raw) : []
-        let changed = false
-        for (const re of remote) {
-          if (!current.some((c) => c.slug === re.slug)) {
-            current.unshift(re)
-            changed = true
-          }
-        }
-        if (changed) {
-          localStorage.setItem('raffle_mock_events_v1', JSON.stringify(current))
-        }
-      }
-    } catch {
-      // ignore
-    }
+    await mergeRemoteEvents()
 
     try {
       const { data } = await supabase
@@ -125,7 +116,8 @@ function HomePage() {
         .select('*')
         .order('created_at', { ascending: false })
       if (data) {
-        setEvents(data as EventRow[])
+        // Archived events are kept for records but moved out of the active list
+        setEvents((data as EventRow[]).filter((event) => !isArchived(event)))
       }
     } catch {
       // ignore
@@ -133,6 +125,8 @@ function HomePage() {
   }, [])
 
   useEffect(() => {
+    // Fetch-on-mount: state is only set after an await inside loadEvents.
+    // oxlint-disable-next-line react/set-state-in-effect
     void loadEvents()
     window.addEventListener('storage', loadEvents)
     window.addEventListener('raffle_demo_change', loadEvents)
@@ -211,7 +205,7 @@ function HomePage() {
           <div className="row wrap space-between align-center">
             <h2>Your Events</h2>
             <Link className="button secondary" to="/host">
-              Host Dashboard (PIN: 0828)
+              Host Dashboard
             </Link>
           </div>
           {events.length === 0 ? (
@@ -267,7 +261,7 @@ function HomePage() {
           <h2>Host Administration</h2>
           <p>
             Access host controls to download genuine Excel rosters, exclude participants, or spin the
-            live raffle wheel. Default PIN: <strong>0828</strong>.
+            live raffle wheel. The dashboard is protected by the host PIN.
           </p>
           <div className="actions">
             <Link className="button" to="/host">
@@ -325,7 +319,8 @@ export function AttendeePage() {
   useEffect(() => {
     if (!slug) return
 
-    // If event metadata is embedded in the QR code URL, use it immediately and store locally
+    // Event metadata embedded in the QR code URL is already used as the initial state;
+    // remember it locally so the built-in backend can accept the check-in.
     if (nameFromUrl) {
       const embeddedEvent = {
         id: idFromUrl || `evt-${slug}`,
@@ -334,29 +329,48 @@ export function AttendeePage() {
         status: 'open' as const,
         registration_open: true,
       }
-      setEventState(embeddedEvent)
-      setLoading(false)
 
-      try {
-        const raw = localStorage.getItem('raffle_mock_events_v1')
-        const events: any[] = raw ? JSON.parse(raw) : []
-        if (!events.some((e) => e.slug === slug)) {
-          events.push(embeddedEvent)
-          localStorage.setItem('raffle_mock_events_v1', JSON.stringify(events))
+      if (cloudRelayEnabled) {
+        try {
+          const raw = localStorage.getItem('raffle_mock_events_v1')
+          const events: EventRow[] = raw ? JSON.parse(raw) : []
+          if (!events.some((e) => e.id === embeddedEvent.id || e.slug === slug)) {
+            events.push({ ...embeddedEvent, created_at: new Date().toISOString() })
+            localStorage.setItem('raffle_mock_events_v1', JSON.stringify(events))
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
       }
-      return
     }
 
     if (!isBackendConfigured) return
 
-    setLoading(true)
-    getPublicEvent(slug)
-      .then((event) => setEventState(event))
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false))
+    // The QR code only carries the event's name/id. Always confirm the live status so a
+    // closed, ended or archived event can't keep accepting check-ins from an old QR code.
+    const abort = new AbortController()
+    const cancelled = () => abort.signal.aborted
+    void (async () => {
+      try {
+        if (cloudRelayEnabled) {
+          await mergeRemoteEvents()
+        }
+        const event = await getPublicEvent(slug, idFromUrl)
+        if (cancelled()) return
+        if (event) {
+          setEventState(event)
+        } else if (!nameFromUrl) {
+          setEventState(null)
+        }
+      } catch (err) {
+        if (!cancelled() && !nameFromUrl) {
+          setError(err instanceof Error ? err.message : 'Unable to load event.')
+        }
+      } finally {
+        if (!cancelled()) setLoading(false)
+      }
+    })()
+    return () => abort.abort()
   }, [slug, nameFromUrl, idFromUrl])
 
   // Move accessible focus to confirmation heading when confirmed screen renders
@@ -382,7 +396,12 @@ export function AttendeePage() {
   }
 
   const submitDisabled =
-    submitting || loading || !eventState || eventState.status !== 'open' || !eventState.registration_open
+    submitting ||
+    loading ||
+    !eventState ||
+    eventState.status !== 'open' ||
+    !eventState.registration_open ||
+    Boolean(eventState.archived_at)
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault()
@@ -405,13 +424,23 @@ export function AttendeePage() {
     }
 
     const receiptKey = getReceiptKey(slug)
-    const previous = localStorage.getItem(receiptKey)
-    const parsed = previous ? JSON.parse(previous) : null
-    const submissionId = parsed?.submissionId ?? crypto.randomUUID()
-    const retryReceipt = parsed?.retryReceipt ?? crypto.randomUUID()
+    const normalizedEmail = `${emailValidation.username.toLocaleLowerCase()}@hofstra.edu`
+    let parsed: { submissionId?: string; retryReceipt?: string; email?: string } | null = null
+    try {
+      const previous = localStorage.getItem(receiptKey)
+      parsed = previous ? JSON.parse(previous) : null
+    } catch {
+      parsed = null
+    }
+    // Reuse identifiers only when retrying the SAME person's submission (e.g. flaky network).
+    // A different attendee on the same phone must get fresh identifiers, or the server
+    // would treat them as a retry of the previous check-in and never record them.
+    const isRetry = parsed?.email === normalizedEmail
+    const submissionId = (isRetry && parsed?.submissionId) || crypto.randomUUID()
+    const retryReceipt = (isRetry && parsed?.retryReceipt) || crypto.randomUUID()
 
     // Save retry identifiers BEFORE network request to guarantee safe client-side idempotency
-    localStorage.setItem(receiptKey, JSON.stringify({ submissionId, retryReceipt }))
+    localStorage.setItem(receiptKey, JSON.stringify({ submissionId, retryReceipt, email: normalizedEmail }))
 
     setSubmitting(true)
     setError(null)
@@ -429,10 +458,8 @@ export function AttendeePage() {
       )
 
       if (response.status === 'accepted' || response.status === 'duplicate') {
-        localStorage.setItem(
-          receiptKey,
-          JSON.stringify({ submissionId, retryReceipt: response.receipt_id ?? retryReceipt }),
-        )
+        // Done: the next person on this device starts with fresh identifiers.
+        localStorage.removeItem(receiptKey)
         setUsernameError(null)
         setConfirmed({
           firstName: validation.first.value,
@@ -447,7 +474,8 @@ export function AttendeePage() {
       } else if (response.status === 'closed') {
         setError('Registration for this event is currently closed.')
       } else if (response.status === 'ended') {
-        setError('This raffle has ended.')
+        setError('This event has ended and check-in is closed.')
+        setEventState((prev) => (prev ? { ...prev, status: 'ended', registration_open: false } : prev))
       } else if (response.status === 'rate_limited') {
         setError('Please wait a moment and try again.')
       } else if (response.status === 'invalid_email') {
@@ -481,7 +509,7 @@ export function AttendeePage() {
       <main className="container narrow confirmation-screen">
         <div className="panel ipod-card confirmation-card">
           <div className="ipod-screen-bar">
-            <span>{confirmed.eventName.toLowerCase().includes('nasa') ? 'NASA Check-In' : 'Event Check-In'}</span>
+            <span>Event Check-In</span>
             <span className="ipod-battery-icon" />
           </div>
           <div className="ipod-card-content confirmation-body">
@@ -491,9 +519,7 @@ export function AttendeePage() {
               </svg>
             </div>
             <h1 ref={headingRef} tabIndex={-1} className="confirmation-heading">
-              {confirmed.eventName.toLowerCase().includes('nasa')
-                ? 'Thank you for attending the NASA event!'
-                : `Thank you for attending ${confirmed.eventName}!`}
+              {`Thank you for attending ${confirmed.eventName}!`}
             </h1>
             <p className="confirmation-greeting">
               You’re checked in, {confirmed.firstName}, and entered into the raffle.
@@ -534,8 +560,8 @@ export function AttendeePage() {
     )
   }
 
-  const isClosed = eventState && (eventState.status === 'closed' || !eventState.registration_open)
-  const isEnded = eventState?.status === 'ended'
+  const isEnded = eventState?.status === 'ended' || Boolean(eventState?.archived_at)
+  const isClosed = Boolean(eventState) && !isEnded && (eventState?.status === 'closed' || !eventState?.registration_open)
 
   return (
     <main className="container narrow">
@@ -553,7 +579,9 @@ export function AttendeePage() {
       {isClosed && (
         <p className="state-banner warning">Registration is closed for now. Please check with the host.</p>
       )}
-      {isEnded && <p className="state-banner warning">This raffle is over. Thanks for joining!</p>}
+      {isEnded && (
+        <p className="state-banner warning">This event has ended and check-in is closed. Thanks for joining!</p>
+      )}
 
       <div className="panel ipod-card">
         <div className="ipod-screen-bar">
@@ -673,7 +701,12 @@ export function HostDashboard() {
   const [drawing, setDrawing] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [lastWinner, setLastWinner] = useState<string | null>(null)
+  const [showArchived, setShowArchived] = useState(false)
+  const [actionNotice, setActionNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
+  const [exportedEventIds, setExportedEventIds] = useState<Set<string>>(() => new Set())
   const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null
+  const activeEvents = useMemo(() => events.filter((event) => !isArchived(event)), [events])
+  const archivedEvents = useMemo(() => events.filter((event) => isArchived(event)), [events])
 
   function handlePinSubmit(e: FormEvent) {
     e.preventDefault()
@@ -704,25 +737,7 @@ export function HostDashboard() {
   const refreshEvents = useCallback(async () => {
     if (!supabase) return
 
-    try {
-      const remoteEvents = await fetchRemoteEvents()
-      if (remoteEvents.length > 0) {
-        const raw = localStorage.getItem('raffle_mock_events_v1')
-        const current: EventRow[] = raw ? JSON.parse(raw) : []
-        let changed = false
-        for (const re of remoteEvents) {
-          if (!current.some((c) => c.slug === re.slug)) {
-            current.unshift(re)
-            changed = true
-          }
-        }
-        if (changed) {
-          localStorage.setItem('raffle_mock_events_v1', JSON.stringify(current))
-        }
-      }
-    } catch {
-      // ignore
-    }
+    await mergeRemoteEvents()
 
     const { data, error } = await supabase
       .from('events')
@@ -736,7 +751,8 @@ export function HostDashboard() {
         if (prev && loaded.some((e) => e.id === prev)) return prev
         const saved = sessionStorage.getItem('raffle_selected_event_id')
         if (saved && loaded.some((e) => e.id === saved)) return saved
-        return loaded[0] ? loaded[0].id : null
+        const firstActive = loaded.find((e) => !e.archived_at) ?? loaded[0]
+        return firstActive ? firstActive.id : null
       })
     }
   }, [])
@@ -772,22 +788,17 @@ export function HostDashboard() {
   useEffect(() => {
     if (!supabase) return
 
-    if (isBackendConfigured) {
-      supabase.auth.getSession().finally(async () => {
-        await refreshEvents()
-        setSessionReady(true)
-      })
-
-      const { data } = supabase.auth.onAuthStateChange(async () => {
-        await refreshEvents()
-        setSessionReady(true)
-      })
-
-      return () => data.subscription.unsubscribe()
-    } else {
-      void refreshEvents()
+    supabase.auth.getSession().finally(async () => {
+      await refreshEvents()
       setSessionReady(true)
-    }
+    })
+
+    const { data } = supabase.auth.onAuthStateChange(async () => {
+      await refreshEvents()
+      setSessionReady(true)
+    })
+
+    return () => data.subscription.unsubscribe()
   }, [refreshEvents])
 
   useEffect(() => {
@@ -795,11 +806,12 @@ export function HostDashboard() {
       return
     }
 
+    // Fetch-on-select: state is only set after an await inside refreshEventDetails.
+    // oxlint-disable-next-line react/set-state-in-effect
     void refreshEventDetails(selectedEventId)
 
     // Listen to live cross-device check-ins from phones via SSE
-    const unsubscribeCloud = subscribeToLiveCheckIns((entry) => {
-      syncIncomingEntry(entry)
+    const unsubscribeCloud = subscribeToLiveCheckIns(() => {
       void refreshEventDetails(selectedEventId)
     }, selectedEventId)
 
@@ -828,10 +840,11 @@ export function HostDashboard() {
       )
       .subscribe()
 
-    // Active sync poll every 20s as fallback (SSE delivers in real time)
+    // Polling fallback in case the realtime/SSE connection drops (common on phones and
+    // captive campus Wi-Fi). Faster when a real backend is connected.
     const interval = setInterval(() => {
       refreshEventDetails(selectedEventId)
-    }, 20000)
+    }, isLiveBackendConfigured ? 10000 : 20000)
 
     const handleSync = () => {
       refreshEventDetails(selectedEventId)
@@ -849,6 +862,7 @@ export function HostDashboard() {
   }, [selectedEventId, refreshEventDetails])
 
   const duplicateIds = useMemo(() => findDuplicateNameIds(entries), [entries])
+  const winnerIds = useMemo(() => winnerIdsFromDraws(draws), [draws])
 
   const filteredEntries = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase()
@@ -858,9 +872,7 @@ export function HostDashboard() {
     )
   }, [entries, search])
 
-  const entryLink = selectedEvent
-    ? `${window.location.origin}${window.location.pathname}#/e/${selectedEvent.slug}?name=${encodeURIComponent(selectedEvent.name)}&id=${encodeURIComponent(selectedEvent.id)}`
-    : ''
+  const entryLink = selectedEvent ? buildCheckInUrl(selectedEvent) : ''
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
 
@@ -898,27 +910,51 @@ export function HostDashboard() {
     setDraws([])
   }
 
+  /** Runs a host action, refreshes state, and surfaces failures instead of swallowing them. */
+  async function runHostAction(action: () => Promise<unknown>, success?: string) {
+    try {
+      await action()
+      await refreshEvents()
+      if (selectedEventId) await refreshEventDetails(selectedEventId)
+      setActionNotice(success ? { tone: 'ok', text: success } : null)
+    } catch (err) {
+      setActionNotice({
+        tone: 'error',
+        text: `Action failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      })
+    }
+  }
+
   async function onCreateEvent(event: FormEvent) {
     event.preventDefault()
     if (!newEventName.trim()) return
-    const created = await createEvent(newEventName)
-    setNewEventName('')
-    await refreshEvents()
-    if (created && typeof created === 'object' && 'id' in created) {
-      const id = created.id as string
-      setSelectedEventId(id)
-      try {
-        sessionStorage.setItem('raffle_selected_event_id', id)
-      } catch {
-        // ignore
+    try {
+      const created = await createEvent(newEventName)
+      setNewEventName('')
+      await refreshEvents()
+      if (created && typeof created === 'object' && 'id' in created) {
+        const id = created.id as string
+        setSelectedEventId(id)
+        try {
+          sessionStorage.setItem('raffle_selected_event_id', id)
+        } catch {
+          // ignore
+        }
       }
+      setActionNotice({ tone: 'ok', text: 'Event created — its QR code and check-in link are ready below.' })
+    } catch (err) {
+      setActionNotice({
+        tone: 'error',
+        text: `Could not create event: ${err instanceof Error ? err.message : 'Unknown error'}${
+          isLiveBackendConfigured ? ' (are you signed in?)' : ''
+        }`,
+      })
     }
   }
 
   async function onToggleEligibility(entryId: string, ineligible: boolean) {
     if (!selectedEventId) return
-    await setEntryIneligible(selectedEventId, entryId, ineligible)
-    await refreshEventDetails(selectedEventId)
+    await runHostAction(() => setEntryIneligible(selectedEventId, entryId, ineligible))
   }
 
   async function onDeleteAllEntries() {
@@ -931,41 +967,84 @@ export function HostDashboard() {
       return
     }
 
-    await clearEventCloudSync(selectedEventId)
-    await clearEntries(selectedEventId)
-    await refreshEventDetails(selectedEventId)
+    await runHostAction(() => clearEntries(selectedEventId), 'All attendee records for this event were deleted.')
   }
 
   async function onDeleteEntry(entryId: string) {
     if (!selectedEventId) return
     if (window.confirm('Permanently delete this attendee record? This cannot be undone.')) {
-      await deleteEntryRecord(selectedEventId, entryId)
-      await refreshEventDetails(selectedEventId)
+      await runHostAction(() => deleteEntryRecord(selectedEventId, entryId))
     }
   }
 
-  async function onDownloadExcel() {
+  /**
+   * End-of-event handoff: opens the SHPE Events Drive folder and downloads the .xlsx so the
+   * host can drop it straight into the folder. The tab is opened synchronously, inside the
+   * click, so Safari's popup blocker allows it.
+   */
+  async function onExportToDrive() {
     if (!selectedEvent) return
+    window.open(SHPE_DRIVE_FOLDER_URL, '_blank', 'noopener')
+    const ok = await onDownloadExcel()
+    if (ok) {
+      setExportedEventIds((prev) => new Set(prev).add(selectedEvent.id))
+      setActionNotice({
+        tone: 'ok',
+        text: `Downloaded ${selectedEvent.slug}-attendance.xlsx and opened the SHPE Events Drive folder. Drag the file into the folder (or use New → File upload), then archive the event.`,
+      })
+    }
+  }
+
+  async function onArchiveEvent() {
+    if (!selectedEvent) return
+    const exported = exportedEventIds.has(selectedEvent.id)
+    const message = exported
+      ? `Archive "${selectedEvent.name}"? Check-in and drawings will be locked and it moves to Archived. Attendance and draw history are kept.`
+      : `You haven't downloaded the attendance Excel for "${selectedEvent.name}" in this session.\n\nArchive anyway? Check-in and drawings will be locked and it moves to Archived. Attendance and draw history are kept, and you can still download the Excel later.`
+    if (!window.confirm(message)) return
+    await runHostAction(() => archiveEvent(selectedEvent.id, true), `"${selectedEvent.name}" was archived. Check-in is locked.`)
+  }
+
+  async function onRestoreEvent() {
+    if (!selectedEvent) return
+    await runHostAction(
+      () => archiveEvent(selectedEvent.id, false),
+      `"${selectedEvent.name}" was restored to your events list. It stays ended (read-only).`,
+    )
+  }
+
+  /** All attendance rows for the selected event plus the ids of everyone the wheel picked. */
+  async function loadExportData(eventId: string) {
+    // Pull latest check-ins (and draws made on the projector laptop) across devices first
+    if (cloudRelayEnabled) await syncAllRemoteCheckIns(eventId)
+
+    // Export every attendance record for the event, not just the search view
+    let exportList = entries
+    let drawList = draws
+    if (supabase) {
+      const [entriesRes, drawsRes] = await Promise.all([
+        supabase.from('entries').select('*').eq('event_id', eventId).order('created_at', { ascending: true }),
+        supabase.from('draws').select('*').eq('event_id', eventId).order('created_at', { ascending: false }),
+      ])
+      if (entriesRes.data) exportList = entriesRes.data as EntryRow[]
+      if (drawsRes.data) drawList = drawsRes.data as DrawRow[]
+    }
+    return { exportList, winnerIds: winnerIdsFromDraws(drawList) }
+  }
+
+  async function onDownloadExcel(): Promise<boolean> {
+    if (!selectedEvent) return false
     setExporting(true)
     try {
-      // Pull latest check-ins across devices first
-      await syncAllRemoteCheckIns(selectedEvent.id)
-
-      // Ensure we export all attendance records for the selected event, not just the search view
-      let exportList = entries
-      if (supabase) {
-        const { data } = await supabase
-          .from('entries')
-          .select('*')
-          .eq('event_id', selectedEvent.id)
-          .order('created_at', { ascending: true })
-        if (data) {
-          exportList = data as EntryRow[]
-        }
-      }
-      await downloadAttendanceExcel(selectedEvent.name, selectedEvent.slug, exportList)
+      const { exportList, winnerIds } = await loadExportData(selectedEvent.id)
+      await downloadAttendanceExcel(selectedEvent.name, selectedEvent.slug, exportList, winnerIds)
+      return true
     } catch (err) {
-      alert(`Excel export failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      setActionNotice({
+        tone: 'error',
+        text: `Excel export failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      })
+      return false
     } finally {
       setExporting(false)
     }
@@ -981,31 +1060,28 @@ export function HostDashboard() {
 
   async function onCopyForGoogleSheet() {
     if (!selectedEvent) return
-    let exportList = entries
-    if (supabase) {
-      const { data } = await supabase
-        .from('entries')
-        .select('*')
-        .eq('event_id', selectedEvent.id)
-        .order('created_at', { ascending: true })
-      if (data) exportList = data as EntryRow[]
+    try {
+      const { exportList, winnerIds } = await loadExportData(selectedEvent.id)
+      const { text, html } = buildAttendanceClipboard(selectedEvent.name, exportList, winnerIds)
+      // Rich copy keeps the yellow winner fill when pasted into Google Sheets
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/html': new Blob([html], { type: 'text/html' }),
+            'text/plain': new Blob([text], { type: 'text/plain' }),
+          }),
+        ])
+      } else {
+        await navigator.clipboard.writeText(text)
+      }
+      setSheetNotice(
+        winnerIds.size > 0
+          ? 'Copied! Paste into the Google Sheet — raffle winners are highlighted yellow.'
+          : 'Copied! Paste into the Google Sheet.',
+      )
+    } catch (err) {
+      setSheetNotice(`Copy failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     }
-
-    const lines = [
-      ['Event', 'First Name', 'Last Name', 'Hofstra Email', 'Check-in Time (UTC)'].join('\t'),
-      ...exportList.map((e) =>
-        [
-          selectedEvent.name,
-          e.first_name,
-          e.last_name,
-          e.hofstra_email,
-          e.checked_in_at ? new Date(e.checked_in_at).toISOString() : new Date().toISOString(),
-        ].join('\t'),
-      ),
-    ]
-
-    await navigator.clipboard.writeText(lines.join('\n'))
-    setSheetNotice('Copied table data to clipboard! You can paste directly into the Google Sheet.')
     setTimeout(() => setSheetNotice(null), 5000)
   }
 
@@ -1059,15 +1135,17 @@ export function HostDashboard() {
           const emailVal = normalizeHofstraUsername(email)
           const username = emailVal.ok ? emailVal.username : email.split('@')[0]
           try {
-            await submitEntry(
+            const res = await submitEntry(
               selectedEvent.slug,
               first,
               last || 'Guest',
               username,
               crypto.randomUUID(),
               crypto.randomUUID(),
+              selectedEvent.id,
+              selectedEvent.name,
             )
-            imported++
+            if (res.status === 'accepted') imported++
           } catch {
             // skip duplicates
           }
@@ -1097,7 +1175,9 @@ export function HostDashboard() {
 
     try {
       const result = await runDraw(selectedEventId, crypto.randomUUID(), removeWinners)
-      if (result?.status === 'empty') {
+      if (result?.status === 'ended') {
+        setLastWinner('This event has ended or is archived — drawings are locked.')
+      } else if (result?.status === 'empty') {
         setLastWinner('No eligible participants remain.')
       } else if (result?.winner_first_name) {
         setLastWinner(`${result.winner_first_name} ${result.winner_last_name}`)
@@ -1173,7 +1253,7 @@ export function HostDashboard() {
         <div>
           <div className="ipod-status-bar">
             <span className="status-title">Host Controls</span>
-            <span className="status-time">PIN 0828 Authenticated</span>
+            <span className="status-time">Host Authenticated</span>
           </div>
           <h1>Host Dashboard</h1>
           <p className="subtitle">Manage raffle events and attendance records</p>
@@ -1188,6 +1268,16 @@ export function HostDashboard() {
         </div>
       </header>
 
+      {actionNotice && (
+        <p
+          className={`state-banner ${actionNotice.tone === 'error' ? 'error' : 'success'}`}
+          role={actionNotice.tone === 'error' ? 'alert' : 'status'}
+        >
+          {actionNotice.text}
+        </p>
+      )}
+
+      {isLiveBackendConfigured && (
       <section className="panel ipod-card">
         <div className="ipod-screen-bar">
           <span>Host Authentication</span>
@@ -1212,6 +1302,7 @@ export function HostDashboard() {
           {authMessage && <p className="status-note">{authMessage}</p>}
         </div>
       </section>
+      )}
 
       <section className="panel ipod-card">
         <div className="ipod-screen-bar">
@@ -1244,11 +1335,11 @@ export function HostDashboard() {
         </div>
         <div className="ipod-card-content">
           <h2>Your Events</h2>
-          {events.length === 0 ? (
-            <p className="empty-text">No events created yet.</p>
+          {activeEvents.length === 0 ? (
+            <p className="empty-text">No active events. Create one above.</p>
           ) : (
             <div className="event-grid">
-              {events.map((event) => (
+              {activeEvents.map((event) => (
                 <button
                   key={event.id}
                   className={`event-card ${selectedEventId === event.id ? 'active' : ''}`}
@@ -1259,6 +1350,33 @@ export function HostDashboard() {
                   <span className={`status-badge status-${event.status}`}>{event.status}</span>
                 </button>
               ))}
+            </div>
+          )}
+          {archivedEvents.length > 0 && (
+            <div className="archived-events">
+              <button
+                className="button secondary"
+                type="button"
+                aria-expanded={showArchived}
+                onClick={() => setShowArchived((v) => !v)}
+              >
+                {showArchived ? 'Hide' : 'Show'} archived events ({archivedEvents.length})
+              </button>
+              {showArchived && (
+                <div className="event-grid">
+                  {archivedEvents.map((event) => (
+                    <button
+                      key={event.id}
+                      className={`event-card archived ${selectedEventId === event.id ? 'active' : ''}`}
+                      onClick={() => setSelectedEventId(event.id)}
+                      type="button"
+                    >
+                      <strong>{event.name}</strong>
+                      <span className="status-badge status-archived">archived</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1286,13 +1404,15 @@ export function HostDashboard() {
                   >
                     Copy Link
                   </button>
-                  <a
-                    className="button secondary"
-                    href={qrDataUrl ?? '#'}
-                    download={`${selectedEvent.slug}-qr.png`}
-                  >
-                    Download QR
-                  </a>
+                  {qrDataUrl ? (
+                    <a className="button secondary" href={qrDataUrl} download={`${selectedEvent.slug}-qr.png`}>
+                      Download QR
+                    </a>
+                  ) : (
+                    <button className="button secondary" type="button" disabled>
+                      Download QR
+                    </button>
+                  )}
                   <button
                     className="button secondary"
                     type="button"
@@ -1307,7 +1427,7 @@ export function HostDashboard() {
                   <button
                     className="button export-action"
                     type="button"
-                    onClick={onDownloadExcel}
+                    onClick={() => void onDownloadExcel()}
                     disabled={exporting}
                   >
                     {exporting ? 'Exporting…' : 'Download Excel'}
@@ -1351,41 +1471,48 @@ export function HostDashboard() {
             </div>
             <div className="ipod-card-content">
               <h2>Event Controls</h2>
+              {isArchived(selectedEvent) ? (
+                <p className="state-banner warning">
+                  This event is archived: check-in and drawings are locked. Attendance and draw history are
+                  preserved below, and you can still download the Excel.
+                </p>
+              ) : selectedEvent.status === 'ended' ? (
+                <p className="state-banner warning">This event has ended: check-in and drawings are locked.</p>
+              ) : null}
               <div className="row wrap">
                 <button
                   className="button"
                   type="button"
-                  onClick={() => setRegistration(selectedEvent.id, true)}
+                  disabled={selectedEvent.status === 'ended' || selectedEvent.registration_open}
+                  onClick={() =>
+                    void runHostAction(() => setRegistration(selectedEvent.id, true), 'Registration is open.')
+                  }
                 >
                   Open Registration
                 </button>
                 <button
                   className="button secondary"
                   type="button"
-                  onClick={() => setRegistration(selectedEvent.id, false)}
+                  disabled={selectedEvent.status === 'ended' || !selectedEvent.registration_open}
+                  onClick={() =>
+                    void runHostAction(() => setRegistration(selectedEvent.id, false), 'Registration is closed.')
+                  }
                 >
                   Close Registration
                 </button>
                 <button
                   className="button secondary"
                   type="button"
-                  onClick={() => endEvent(selectedEvent.id)}
-                >
-                  End Event
-                </button>
-                <button
-                  className="button danger"
-                  type="button"
+                  disabled={selectedEvent.status === 'ended'}
                   onClick={() => {
-                    if (
-                      window.confirm(
-                        'Clear all entries for this event? All attendance records will be removed.',
-                      )
-                    ) {
-                      clearEntries(selectedEvent.id).then(() => refreshEventDetails(selectedEvent.id))
+                    if (window.confirm(`End "${selectedEvent.name}"? Check-in and new drawings will be locked.`)) {
+                      void runHostAction(() => endEvent(selectedEvent.id), 'Event ended.')
                     }
                   }}
                 >
+                  End Event
+                </button>
+                <button className="button danger" type="button" onClick={() => void onDeleteAllEntries()}>
                   Clear Entries
                 </button>
                 <button
@@ -1402,15 +1529,58 @@ export function HostDashboard() {
                       } catch {
                         // ignore
                       }
-                      deleteEventData(selectedEvent.id).then(() => {
+                      void runHostAction(async () => {
+                        await deleteEventData(selectedEvent.id)
                         setSelectedEventId(null)
-                        refreshEvents()
-                      })
+                      }, 'Event deleted.')
                     }
                   }}
                 >
                   Delete Event
                 </button>
+              </div>
+            </div>
+          </section>
+
+          <section className="panel ipod-card wrap-up-panel">
+            <div className="ipod-screen-bar">
+              <span>End of Event</span>
+              <span className="ipod-battery-icon" />
+            </div>
+            <div className="ipod-card-content">
+              <h2>Save to Drive &amp; Archive</h2>
+              <ol className="wrap-up-steps">
+                <li>
+                  <strong>Download Excel &amp; open the SHPE Events Drive folder.</strong> Upload the
+                  downloaded <code>{selectedEvent.slug}-attendance.xlsx</code> into the folder.
+                  {exportedEventIds.has(selectedEvent.id) && <span className="done-tag"> ✓ Downloaded</span>}
+                </li>
+                <li>
+                  <strong>Archive the event.</strong> Check-in and drawings lock, and it moves out of your
+                  active events. Nothing is deleted.
+                </li>
+              </ol>
+              <div className="row wrap">
+                <button
+                  className="button export-action"
+                  type="button"
+                  onClick={() => void onExportToDrive()}
+                  disabled={exporting}
+                >
+                  {exporting ? 'Exporting…' : 'Download Excel & Open Drive Folder'}
+                </button>
+                {isArchived(selectedEvent) ? (
+                  <button className="button secondary" type="button" onClick={() => void onRestoreEvent()}>
+                    Restore to Events List
+                  </button>
+                ) : (
+                  <button className="button" type="button" onClick={() => void onArchiveEvent()}>
+                    Archive Event
+                  </button>
+                )}
+                <a className="button secondary" href={SHPE_DRIVE_FOLDER_URL} target="_blank" rel="noopener noreferrer">
+                  Open Drive Folder ↗
+                </a>
               </div>
             </div>
           </section>
@@ -1437,7 +1607,12 @@ export function HostDashboard() {
                   />
                   Remove winners from future draws
                 </label>
-                <button className="button primary-action" type="button" onClick={onDraw} disabled={drawing}>
+                <button
+                  className="button primary-action"
+                  type="button"
+                  onClick={onDraw}
+                  disabled={drawing || selectedEvent.status === 'ended'}
+                >
                   {drawing ? 'Drawing…' : 'Run Draw'}
                 </button>
               </div>
@@ -1506,7 +1681,7 @@ export function HostDashboard() {
                   <button
                     className="button secondary"
                     type="button"
-                    onClick={onDownloadExcel}
+                    onClick={() => void onDownloadExcel()}
                     disabled={exporting}
                   >
                     {exporting ? 'Exporting…' : 'Download Excel (.xlsx)'}
@@ -1524,7 +1699,10 @@ export function HostDashboard() {
               ) : (
                 <ul className="entry-list">
                   {filteredEntries.map((entry) => (
-                    <li key={entry.id} className={entry.ineligible ? 'entry-ineligible' : ''}>
+                    <li
+                      key={entry.id}
+                      className={`${entry.ineligible ? 'entry-ineligible' : ''} ${winnerIds.has(entry.id) ? 'entry-winner' : ''}`}
+                    >
                       <div className="entry-info">
                         <strong>
                           {entry.first_name} {entry.last_name}
@@ -1539,8 +1717,10 @@ export function HostDashboard() {
                         {duplicateIds.has(entry.id) && (
                           <span className="badge-warning">Matching name on file</span>
                         )}
-                        {entry.ineligible && (
-                          <span className="badge-excluded">Excluded from raffle</span>
+                        {winnerIds.has(entry.id) ? (
+                          <span className="badge-winner">🏆 Raffle winner — highlighted yellow in Excel</span>
+                        ) : (
+                          entry.ineligible && <span className="badge-excluded">Excluded from raffle</span>
                         )}
                       </div>
                       <div className="entry-actions">
@@ -1569,6 +1749,33 @@ export function HostDashboard() {
       )}
     </main>
   )
+}
+
+type AudioContextCtor = typeof AudioContext
+
+const WINNER_HOLD_MS = 8000
+
+/** Short rising chime. The context must be created/resumed inside a user gesture on iOS. */
+function playWinnerTone(ctx: AudioContext | null) {
+  if (!ctx) return
+  try {
+    const now = ctx.currentTime
+    ;[523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'triangle'
+      osc.frequency.value = freq
+      const t = now + i * 0.12
+      gain.gain.setValueAtTime(0.0001, t)
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.45)
+      osc.connect(gain).connect(ctx.destination)
+      osc.start(t)
+      osc.stop(t + 0.5)
+    })
+  } catch {
+    // audio is best-effort
+  }
 }
 
 export function ProjectorModePage() {
@@ -1611,6 +1818,8 @@ export function ProjectorModePage() {
   const [entries, setEntries] = useState<EntryRow[]>([])
   const [draw, setDraw] = useState<DrawRow | null>(null)
   const [rotation, setRotation] = useState(0)
+  const [spinSnapshot, setSpinSnapshot] = useState<DrawRow['snapshot'] | null>(null)
+  const [wheelSpinning, setWheelSpinning] = useState(false)
   const [showQr, setShowQr] = useState(true)
   const [playSound, setPlaySound] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
@@ -1618,39 +1827,62 @@ export function ProjectorModePage() {
   const [spinning, setSpinning] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null)
+  const [spinNotice, setSpinNotice] = useState<string | null>(null)
 
-  // Read entries directly from localStorage — instant, no async needed
-  const readLocalEntries = useCallback(() => {
-    if (!eventId) return
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const playSoundRef = useRef(playSound)
+  const initialLoadDoneRef = useRef(false)
+  const lastAnimatedDrawIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    playSoundRef.current = playSound
+  }, [playSound])
+
+  function unlockAudio() {
+    if (typeof window === 'undefined') return
     try {
-      const raw = localStorage.getItem('raffle_mock_entries_v1')
-      const all: EntryRow[] = raw ? JSON.parse(raw) : []
-      const filtered = all
-        .filter((e) => e.event_id === eventId || (!e.event_id && eventId === 'evt-nasa-2026'))
-        .sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
-      setEntries(filtered)
-    } catch {
-      // ignore parse errors
-    }
-    // Also update draws
-    try {
-      const dRaw = localStorage.getItem('raffle_mock_draws_v1')
-      const draws: DrawRow[] = dRaw ? JSON.parse(dRaw) : []
-      const latest = draws
-        .filter((d) => d.event_id === eventId || (!d.event_id && eventId === 'evt-nasa-2026'))
-        .sort((a, b) => (a.created_at > b.created_at ? -1 : 1))[0]
-      if (latest) setDraw(latest)
+      if (!audioCtxRef.current) {
+        const Ctor: AudioContextCtor | undefined =
+          window.AudioContext ?? (window as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext
+        if (Ctor) audioCtxRef.current = new Ctor()
+      }
+      void audioCtxRef.current?.resume()
     } catch {
       // ignore
     }
+  }
+
+  // Loads the event, its entries and the latest draw through the backend client, so the
+  // same code works against Supabase (live) and the built-in local backend.
+  const loadSnapshot = useCallback(async () => {
+    if (!eventId || !supabase) return
+    try {
+      const [eventRes, entriesRes, drawsRes] = await Promise.all([
+        supabase.from('events').select('*').eq('id', eventId).maybeSingle(),
+        supabase.from('entries').select('*').eq('event_id', eventId).order('created_at', { ascending: true }),
+        supabase.from('draws').select('*').eq('event_id', eventId).order('created_at', { ascending: false }).limit(1),
+      ])
+      if (eventRes.data) setEventData(eventRes.data as EventRow)
+      if (entriesRes.data) setEntries(entriesRes.data as EntryRow[])
+      const latest = ((drawsRes.data as DrawRow[] | null) ?? [])[0] ?? null
+      if (!initialLoadDoneRef.current) {
+        // Don't replay an old drawing when the projector page is opened or reloaded
+        lastAnimatedDrawIdRef.current = latest?.id ?? null
+        initialLoadDoneRef.current = true
+      }
+      if (latest) setDraw((prev) => (prev?.id === latest.id ? prev : latest))
+    } catch {
+      // transient network errors: the next poll retries
+    }
   }, [eventId])
 
-  // Trigger a background ntfy.sh fetch then re-read localStorage
   const syncAndReload = useCallback(async () => {
     if (!eventId) return
-    await syncAllRemoteCheckIns(eventId)
-    readLocalEntries()
-  }, [eventId, readLocalEntries])
+    if (cloudRelayEnabled) {
+      await Promise.all([syncAllRemoteCheckIns(eventId), mergeRemoteEvents()])
+    }
+    await loadSnapshot()
+  }, [eventId, loadSnapshot])
 
   const handleManualRefresh = async () => {
     if (!eventId || refreshing) return
@@ -1665,107 +1897,103 @@ export function ProjectorModePage() {
     }
   }
 
-  // Load event details and real QR code
+  // Real, scannable QR code for this event's check-in page
+  const qrUrl = eventData ? buildCheckInUrl(eventData) : ''
+  useEffect(() => {
+    if (!qrUrl) return
+    QRCode.toDataURL(qrUrl, {
+      margin: 2,
+      width: 320,
+      errorCorrectionLevel: 'H',
+      color: { dark: '#1c1c1e', light: '#ffffff' },
+    })
+      .then(setQrDataUrl)
+      .catch(() => setQrDataUrl(null))
+  }, [qrUrl])
+
   useEffect(() => {
     if (!eventId) return
 
-    // Load event metadata from mock (reads localStorage)
-    try {
-      const evRaw = localStorage.getItem('raffle_mock_events_v1')
-      const events: EventRow[] = evRaw ? JSON.parse(evRaw) : []
-      let ev = events.find((e) => e.id === eventId) ?? null
-      if (!ev && nameFromUrl) {
-        ev = {
-          id: eventId,
-          name: decodeURIComponent(nameFromUrl),
-          slug: `evt-${eventId}`,
-          status: 'open',
-          registration_open: true,
-          created_at: new Date().toISOString(),
-        }
-      }
-      if (ev) {
-        setEventData(ev)
-        const url = `${window.location.origin}${window.location.pathname}#/e/${ev.slug}?name=${encodeURIComponent(ev.name)}&id=${encodeURIComponent(ev.id)}`
-        QRCode.toDataURL(url, {
-          margin: 2,
-          width: 320,
-          errorCorrectionLevel: 'H',
-          color: { dark: '#1c1c1e', light: '#ffffff' },
-        })
-          .then(setQrDataUrl)
-          .catch(() => setQrDataUrl(null))
-      }
-    } catch {
-      // ignore
-    }
+    // Fetch-on-mount: state is only set after an await inside loadSnapshot.
+    // oxlint-disable-next-line react/set-state-in-effect
+    void loadSnapshot()
 
-    // Initial load from localStorage (instant)
-    readLocalEntries()
-
-    // Subscribe to live cross-device check-ins from phones via SSE
+    // Live check-ins from phones (relay SSE in local mode; no-op with Supabase)
     const unsubscribeCloud = subscribeToLiveCheckIns((entry) => {
-      syncIncomingEntry(entry)
-      if (entry.event_id === eventId || (!entry.event_id && eventId === 'evt-nasa-2026')) {
+      if (entry.event_id === eventId) {
         setRecentAttendee(`${entry.first_name} ${entry.last_name}`)
         setTimeout(() => setRecentAttendee(null), 5000)
       }
-      readLocalEntries()
+      void loadSnapshot()
     }, eventId)
 
-    // Poll localStorage every 1.5s for local changes (same-device or storage events)
-    const localInterval = setInterval(readLocalEntries, 1500)
+    // Supabase Realtime (live backend); the local backend's channel fires on local changes
+    const channel = supabase
+      ?.channel(`projector-${eventId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'entries', filter: `event_id=eq.${eventId}` }, () => {
+        void loadSnapshot()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'draws', filter: `event_id=eq.${eventId}` }, () => {
+        void loadSnapshot()
+      })
+      .subscribe()
 
-    // Poll cloud every 25s as gentle fallback (SSE is primary real-time push)
-    const remoteInterval = setInterval(() => {
-      void syncAllRemoteCheckIns(eventId).then(() => readLocalEntries())
-    }, 25000)
+    // Polling fallback: cheap local reads in local mode, gentler against a live backend
+    const localInterval = setInterval(() => void loadSnapshot(), isLiveBackendConfigured ? 5000 : 1500)
+    const remoteInterval = cloudRelayEnabled ? setInterval(() => void syncAndReload(), 25000) : undefined
+    const kickoff = cloudRelayEnabled ? setTimeout(() => void syncAndReload(), 500) : undefined
 
-    // Listen for storage events (same-browser cross-tab) and custom events
-    window.addEventListener('storage', readLocalEntries)
-    window.addEventListener('raffle_demo_change', readLocalEntries)
-
-    // Kick off a first remote sync after a short delay
-    setTimeout(() => {
-      void syncAllRemoteCheckIns(eventId).then(() => readLocalEntries())
-    }, 500)
+    const onLocalChange = () => void loadSnapshot()
+    window.addEventListener('storage', onLocalChange)
+    window.addEventListener('raffle_demo_change', onLocalChange)
 
     return () => {
       unsubscribeCloud()
+      channel?.unsubscribe()
       clearInterval(localInterval)
-      clearInterval(remoteInterval)
-      window.removeEventListener('storage', readLocalEntries)
-      window.removeEventListener('raffle_demo_change', readLocalEntries)
+      if (remoteInterval) clearInterval(remoteInterval)
+      if (kickoff) clearTimeout(kickoff)
+      window.removeEventListener('storage', onLocalChange)
+      window.removeEventListener('raffle_demo_change', onLocalChange)
     }
-  }, [eventId, readLocalEntries, syncAndReload])
+  }, [eventId, loadSnapshot, syncAndReload])
 
-  // Active participant list for the wheel:
-  // Shows all currently eligible live entries.
-  // During an active spin animation, if a draw snapshot exists, use it so the wheel lands on the winner.
-  const wheelParticipants = useMemo(() => {
-    if (spinning && draw?.snapshot?.length) {
-      return draw.snapshot
-    }
-    return entries.filter((e) => !e.ineligible)
-  }, [spinning, draw, entries])
-
+  // Animate each NEW draw exactly once. The wheel keeps showing the draw's snapshot for the
+  // whole spin so slices don't change under the pointer when the winner is removed.
   useEffect(() => {
-    if (!draw?.snapshot?.length || !draw.winner_entry_id) return
+    if (!draw || draw.id === lastAnimatedDrawIdRef.current) return
+    lastAnimatedDrawIdRef.current = draw.id
+    if (!draw.snapshot?.length || !draw.winner_entry_id) return
     const index = draw.snapshot.findIndex((entry) => entry.id === draw.winner_entry_id)
-    if (index >= 0) {
-      const targetRotation = computeWheelRotation(index, draw.snapshot.length)
-      setRotation(targetRotation)
+    if (index < 0) return
 
-      if (playSound) {
-        const audio = new Audio(
-          'data:audio/wav;base64,UklGRjQAAABXQVZFZm10IBAAAAABAAEAgD4AAIA+AAABAAgAZGF0YRAAAAAA',
-        )
-        void audio.play().catch(() => undefined)
-      }
+    const snapshot = draw.snapshot
+    const startTimer = setTimeout(() => {
+      setSpinSnapshot(snapshot)
+      setWheelSpinning(true)
+      setRotation((prev) => nextWheelRotation(prev, index, snapshot.length))
+    }, 0)
+    const landedTimer = setTimeout(() => {
+      setWheelSpinning(false)
+      if (playSoundRef.current) playWinnerTone(audioCtxRef.current)
+    }, WHEEL_SPIN_MS + 150)
+    // Hold the landed wheel so the room can see the winner's slice under the pointer,
+    // then return to the live list (where a removed winner no longer appears).
+    const holdTimer = setTimeout(() => setSpinSnapshot(null), WHEEL_SPIN_MS + 150 + WINNER_HOLD_MS)
+    return () => {
+      clearTimeout(startTimer)
+      clearTimeout(landedTimer)
+      clearTimeout(holdTimer)
     }
-  }, [draw, playSound])
+  }, [draw])
 
-  // Generate dynamic iPod-inspired wheel background colors corresponding to real entries
+  const wheelParticipants = useMemo(
+    () => spinSnapshot ?? entries.filter((e) => !e.ineligible),
+    [spinSnapshot, entries],
+  )
+  const eventLocked = eventData?.status === 'ended' || isArchived(eventData)
+
+  // iPod-inspired wheel colors, one slice per participant
   const wheelBackground = useMemo(() => {
     const count = wheelParticipants.length
     if (count <= 0) {
@@ -1787,31 +2015,38 @@ export function ProjectorModePage() {
     const sliceAngle = 360 / segmentCount
     const stops: string[] = []
     for (let i = 0; i < segmentCount; i++) {
-      const color = colors[i % colors.length]
+      // Avoid two adjacent slices sharing a color when the count wraps around the palette
+      const color = colors[(i === segmentCount - 1 && i % colors.length === 0 ? 1 : i) % colors.length]
       stops.push(`${color} ${i * sliceAngle}deg ${(i + 1) * sliceAngle}deg`)
     }
     return `conic-gradient(${stops.join(', ')})`
   }, [wheelParticipants])
 
   async function onSpinProjectorWheel() {
-    if (!eventId || wheelParticipants.length === 0 || spinning) return
+    if (!eventId || wheelParticipants.length === 0 || spinning || wheelSpinning) return
+    if (playSound) unlockAudio()
     setSpinning(true)
+    setSpinNotice(null)
     try {
       const res = await runDraw(eventId, crypto.randomUUID(), true)
-      if (res?.winner_first_name) {
-        // Read the new draw directly from localStorage
-        readLocalEntries()
+      if (res?.status === 'ended') {
+        setSpinNotice('This event has ended or is archived — drawings are locked.')
+      } else if (res?.status === 'empty') {
+        setSpinNotice('No eligible participants remain.')
       }
+      await loadSnapshot()
     } catch (err) {
-      alert(`Drawing failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      setSpinNotice(`Drawing failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     } finally {
       setSpinning(false)
     }
   }
 
-  const winnerName = draw?.winner_first_name
-    ? `${draw.winner_first_name} ${draw.winner_last_name}`
-    : 'Waiting for drawing…'
+  const winnerName = wheelSpinning
+    ? 'Spinning…'
+    : draw?.winner_first_name
+      ? `${draw.winner_first_name} ${draw.winner_last_name}`
+      : 'Waiting for drawing…'
 
   return (
     <main className="container projector">
@@ -1857,11 +2092,20 @@ export function ProjectorModePage() {
           <input
             type="checkbox"
             checked={playSound}
-            onChange={(event) => setPlaySound(event.target.checked)}
+            onChange={(event) => {
+              setPlaySound(event.target.checked)
+              if (event.target.checked) unlockAudio()
+            }}
           />{' '}
           Play Audio Tone
         </label>
       </div>
+
+      {eventLocked && (
+        <p className="state-banner warning">
+          {isArchived(eventData) ? 'This event is archived.' : 'This event has ended.'} Check-in and drawings are locked.
+        </p>
+      )}
 
       <section className="projector-grid">
         <div className="wheel-shell" aria-live="polite">
@@ -1879,13 +2123,11 @@ export function ProjectorModePage() {
             }}
           >
             {wheelParticipants.length > 0 && wheelParticipants.length <= 24 && (
-              <svg className="wheel-svg" viewBox="-200 -200 400 400">
+              <svg className="wheel-svg" viewBox="-200 -200 400 400" aria-hidden="true">
                 {wheelParticipants.map((p, idx) => {
-                  const sliceAngle = 360 / wheelParticipants.length
-                  const midAngle = idx * sliceAngle + sliceAngle / 2
                   const label = `${p.first_name} ${p.last_name ? p.last_name[0] + '.' : ''}`
                   return (
-                    <g key={p.id || idx} transform={`rotate(${midAngle})`}>
+                    <g key={p.id || idx} transform={`rotate(${sliceLabelAngle(idx, wheelParticipants.length)})`}>
                       <text
                         x="170"
                         y="5"
@@ -1914,10 +2156,11 @@ export function ProjectorModePage() {
             className="button primary spin-projector-btn"
             type="button"
             onClick={onSpinProjectorWheel}
-            disabled={spinning || wheelParticipants.length === 0}
+            disabled={spinning || wheelSpinning || eventLocked || wheelParticipants.length === 0}
           >
-            {spinning ? 'Spinning Wheel…' : '🎲 Spin The Wheel'}
+            {spinning || wheelSpinning ? 'Spinning Wheel…' : '🎲 Spin The Wheel'}
           </button>
+          {spinNotice && <p className="state-banner warning">{spinNotice}</p>}
         </div>
 
         {showQr && (

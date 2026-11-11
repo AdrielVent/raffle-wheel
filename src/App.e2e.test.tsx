@@ -16,7 +16,7 @@ describe('End-to-End Cross-Device Wheel & Excel Verification', () => {
 
   it('updates Projector Mode wheel participants and roster when a phone checks in', async () => {
     render(
-      <MemoryRouter initialEntries={['/host/projector/evt-nasa-2026']}>
+      <MemoryRouter initialEntries={['/host/projector/evt-fall-mixer']}>
         <Routes>
           <Route path="/host/projector/:eventId" element={<ProjectorModePage />} />
         </Routes>
@@ -29,7 +29,7 @@ describe('End-to-End Cross-Device Wheel & Excel Verification', () => {
     // Simulate phone check-in arriving over the cloud sync channel
     syncIncomingEntry({
       id: 'phone-entry-elena',
-      event_id: 'evt-nasa-2026',
+      event_id: 'evt-fall-mixer',
       first_name: 'Elena',
       last_name: 'Rostova',
       hofstra_email: 'erostova1@hofstra.edu',
@@ -45,10 +45,17 @@ describe('End-to-End Cross-Device Wheel & Excel Verification', () => {
   })
 
   it('includes cross-device checked-in attendee in Host Dashboard and Excel export rows', async () => {
+    // The host created this event; there are no built-in events
+    localStorage.setItem(
+      'raffle_mock_events_v1',
+      JSON.stringify([
+        { id: 'evt-fall-mixer', name: 'Fall Career Mixer', slug: 'fall-career-mixer-a1b2c3', status: 'open', registration_open: true, created_at: '2026-11-05T12:00:00Z' },
+      ]),
+    )
     // Simulate phone check-in saved into shared storage via cloud sync
     syncIncomingEntry({
       id: 'phone-entry-adriel',
-      event_id: 'evt-nasa-2026',
+      event_id: 'evt-fall-mixer',
       first_name: 'Adriel',
       last_name: 'Ventura',
       hofstra_email: 'aventura2@hofstra.edu',
@@ -74,7 +81,7 @@ describe('End-to-End Cross-Device Wheel & Excel Verification', () => {
     // Verify Excel builder exports Adriel with UTC timestamp
     const raw = localStorage.getItem('raffle_mock_entries_v1')
     const entries = raw ? JSON.parse(raw) : []
-    const excelRows = buildAttendanceRows('NASA Space Apps Challenge', entries)
+    const excelRows = buildAttendanceRows('Fall Career Mixer', entries)
 
     const adrielRow = excelRows.find((row) =>
       row.some((cell) => cell.value === 'aventura2@hofstra.edu'),

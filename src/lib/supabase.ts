@@ -7,6 +7,10 @@ export const supabase = isLiveBackendConfigured
       auth: {
         persistSession: true,
         autoRefreshToken: true,
+        // PKCE returns the magic-link result as ?code= in the query string. The implicit flow
+        // uses the URL fragment, which collides with HashRouter routes on GitHub Pages.
+        flowType: 'pkce',
+        detectSessionInUrl: true,
       },
     })
   : createMockSupabaseClient()

@@ -18,19 +18,26 @@ vi.mock('./lib/api', () => ({
   deleteEntryRecord: vi.fn(),
   removeEntry: vi.fn(),
   runDraw: vi.fn(),
+  archiveEvent: vi.fn(),
+}))
+
+// Mock the .xlsx writer (jsdom can't save files)
+vi.mock('./lib/excel', () => ({
+  downloadAttendanceExcel: vi.fn().mockResolvedValue(undefined),
 }))
 
 // Mock env
 vi.mock('./lib/env', () => ({
   isBackendConfigured: true,
+  isLiveBackendConfigured: false,
   supabaseUrl: 'https://test.supabase.co',
   supabaseAnonKey: 'test-anon-key',
 }))
 
 const mockEvent = {
   id: 'evt-123',
-  name: 'NASA Tech Expo',
-  slug: 'nasa-expo',
+  name: 'Fall Career Mixer',
+  slug: 'fall-career-mixer',
   status: 'open',
   registration_open: true,
   created_at: new Date().toISOString(),
@@ -83,26 +90,28 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
     window.localStorage.clear()
     window.sessionStorage.clear()
     window.sessionStorage.setItem('raffle_host_pin_unlocked', '0828')
+    // Never hit the real public relay from tests
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }))
   })
 
   it('renders check-in form with visible @hofstra.edu suffix and exact labels', async () => {
     vi.mocked(api.getPublicEvent).mockResolvedValueOnce({
       id: 'event-1',
-      name: 'NASA Tech Expo',
-      slug: 'nasa-expo',
+      name: 'Fall Career Mixer',
+      slug: 'fall-career-mixer',
       status: 'open',
       registration_open: true,
     })
 
     render(
-      <MemoryRouter initialEntries={['/e/nasa-expo']}>
+      <MemoryRouter initialEntries={['/e/fall-career-mixer']}>
         <Routes>
           <Route path="/e/:slug" element={<AttendeePage />} />
         </Routes>
       </MemoryRouter>,
     )
 
-    expect(await screen.findByText('NASA Tech Expo')).toBeInTheDocument()
+    expect(await screen.findByText('Fall Career Mixer')).toBeInTheDocument()
     expect(screen.getByLabelText(/first name/i)).toBeInTheDocument()
     expect(screen.getByLabelText(/last name/i)).toBeInTheDocument()
     expect(screen.getByText('Hofstra email for check-in')).toBeInTheDocument()
@@ -115,21 +124,21 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
     const user = userEvent.setup()
     vi.mocked(api.getPublicEvent).mockResolvedValueOnce({
       id: 'event-1',
-      name: 'NASA Tech Expo',
-      slug: 'nasa-expo',
+      name: 'Fall Career Mixer',
+      slug: 'fall-career-mixer',
       status: 'open',
       registration_open: true,
     })
 
     render(
-      <MemoryRouter initialEntries={['/e/nasa-expo']}>
+      <MemoryRouter initialEntries={['/e/fall-career-mixer']}>
         <Routes>
           <Route path="/e/:slug" element={<AttendeePage />} />
         </Routes>
       </MemoryRouter>,
     )
 
-    await screen.findByText('NASA Tech Expo')
+    await screen.findByText('Fall Career Mixer')
     const usernameInput = screen.getByPlaceholderText('aventura2')
     await user.type(usernameInput, 'aventura2@hofstra.edu')
 
@@ -140,8 +149,8 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
     const user = userEvent.setup()
     vi.mocked(api.getPublicEvent).mockResolvedValueOnce({
       id: 'event-1',
-      name: 'NASA Tech Expo',
-      slug: 'nasa-expo',
+      name: 'Fall Career Mixer',
+      slug: 'fall-career-mixer',
       status: 'open',
       registration_open: true,
     })
@@ -151,14 +160,14 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
     })
 
     render(
-      <MemoryRouter initialEntries={['/e/nasa-expo']}>
+      <MemoryRouter initialEntries={['/e/fall-career-mixer']}>
         <Routes>
           <Route path="/e/:slug" element={<AttendeePage />} />
         </Routes>
       </MemoryRouter>,
     )
 
-    await screen.findByText('NASA Tech Expo')
+    await screen.findByText('Fall Career Mixer')
 
     await user.type(screen.getByLabelText(/first name/i), 'Adriel')
     await user.type(screen.getByLabelText(/last name/i), 'Ventura')
@@ -169,7 +178,7 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
     // Form must be REPLACED with dedicated confirmation screen
     await waitFor(() => {
       expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
-        'Thank you for attending the NASA event!',
+        'Thank you for attending Fall Career Mixer!',
       )
     })
 
@@ -182,7 +191,7 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
     ).toBeInTheDocument()
     expect(screen.getByText('Watch the main screen for the drawing.')).toBeInTheDocument()
     expect(screen.getByText('You can close this page.')).toBeInTheDocument()
-    expect(screen.getByText('NASA Tech Expo')).toBeInTheDocument()
+    expect(screen.getByText('Fall Career Mixer')).toBeInTheDocument()
 
     // Form controls and emails must NOT be displayed on confirmation screen
     expect(screen.queryByLabelText(/first name/i)).not.toBeInTheDocument()
@@ -194,8 +203,8 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
     const user = userEvent.setup()
     vi.mocked(api.getPublicEvent).mockResolvedValueOnce({
       id: 'event-1',
-      name: 'NASA Tech Expo',
-      slug: 'nasa-expo',
+      name: 'Fall Career Mixer',
+      slug: 'fall-career-mixer',
       status: 'open',
       registration_open: true,
     })
@@ -204,14 +213,14 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
     })
 
     render(
-      <MemoryRouter initialEntries={['/e/nasa-expo']}>
+      <MemoryRouter initialEntries={['/e/fall-career-mixer']}>
         <Routes>
           <Route path="/e/:slug" element={<AttendeePage />} />
         </Routes>
       </MemoryRouter>,
     )
 
-    await screen.findByText('NASA Tech Expo')
+    await screen.findByText('Fall Career Mixer')
 
     const firstInput = screen.getByLabelText(/first name/i)
     const lastInput = screen.getByLabelText(/last name/i)
@@ -234,11 +243,17 @@ describe('Attendee Check-In and Dedicated Confirmation Screen', () => {
     expect(emailInput).toHaveValue('aventura2')
 
     // Confirmation screen must NOT be displayed
-    expect(screen.queryByText('Thank you for attending the NASA event!')).not.toBeInTheDocument()
+    expect(screen.queryByText('Thank you for attending Fall Career Mixer!')).not.toBeInTheDocument()
   })
 })
 
 describe('Host Dashboard and Projector Mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.sessionStorage.setItem('raffle_host_pin_unlocked', '0828')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }))
+  })
+
   it('renders Download Excel action in host dashboard', async () => {
     render(
       <MemoryRouter initialEntries={['/host']}>
@@ -301,6 +316,101 @@ describe('Host Dashboard and Projector Mode', () => {
     await user.click(screen.getByRole('button', { name: /unlock dashboard/i }))
 
     expect(await screen.findByText('Host Dashboard')).toBeInTheDocument()
-    expect(screen.getByText('PIN 0828 Authenticated')).toBeInTheDocument()
+    expect(screen.getByText('Host Authenticated')).toBeInTheDocument()
+  })
+})
+
+describe('End-of-event Drive handoff, archiving, and repeat check-ins', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+    window.sessionStorage.setItem('raffle_host_pin_unlocked', '0828')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }))
+  })
+
+  function renderHost() {
+    render(
+      <MemoryRouter initialEntries={['/host']}>
+        <Routes>
+          <Route path="/host" element={<HostDashboard />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  it('downloads the Excel and opens the SHPE Events Drive folder in one click', async () => {
+    const user = userEvent.setup()
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+    const excel = await import('./lib/excel')
+    renderHost()
+
+    await user.click(await screen.findByRole('button', { name: /download excel & open drive folder/i }))
+
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://drive.google.com/drive/folders/1SdR0qAdPE_zqdDJJ5khZvC89KII_Nedv?usp=sharing',
+      '_blank',
+      'noopener',
+    )
+    await waitFor(() => expect(excel.downloadAttendanceExcel).toHaveBeenCalledWith('Fall Career Mixer', 'fall-career-mixer', [], new Set()))
+    expect(await screen.findByText(/drag the file into the folder/i)).toBeInTheDocument()
+  })
+
+  it('archives the selected event after confirmation', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.mocked(api.archiveEvent).mockResolvedValue(undefined)
+    renderHost()
+
+    await user.click(await screen.findByRole('button', { name: /^archive event$/i }))
+
+    await waitFor(() => expect(api.archiveEvent).toHaveBeenCalledWith('evt-123', true))
+    expect(await screen.findByText(/was archived\. check-in is locked\./i)).toBeInTheDocument()
+  })
+
+  it('does not archive when the host cancels', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderHost()
+    await user.click(await screen.findByRole('button', { name: /^archive event$/i }))
+    expect(api.archiveEvent).not.toHaveBeenCalled()
+  })
+
+  it('gives a second attendee on the same phone fresh submission identifiers', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.getPublicEvent).mockResolvedValue({
+      id: 'event-1',
+      name: 'Fall Career Mixer',
+      slug: 'fall-career-mixer',
+      status: 'open',
+      registration_open: true,
+    })
+    vi.mocked(api.submitEntry).mockResolvedValue({ status: 'accepted', receipt_id: 'r' })
+
+    render(
+      <MemoryRouter initialEntries={['/e/fall-career-mixer']}>
+        <Routes>
+          <Route path="/e/:slug" element={<AttendeePage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByText('Fall Career Mixer')
+
+    async function checkIn(first: string, last: string, user1: string) {
+      await user.type(screen.getByLabelText(/first name/i), first)
+      await user.type(screen.getByLabelText(/last name/i), last)
+      await user.type(screen.getByPlaceholderText('aventura2'), user1)
+      await user.click(screen.getByRole('button', { name: /check in & join raffle/i }))
+      await screen.findByRole('button', { name: /register another attendee/i })
+    }
+
+    await checkIn('Adriel', 'Ventura', 'aventura2')
+    await user.click(screen.getByRole('button', { name: /register another attendee/i }))
+    await checkIn('Sam', 'Chen', 'schen2')
+
+    const calls = vi.mocked(api.submitEntry).mock.calls
+    expect(calls).toHaveLength(2)
+    expect(calls[0][4]).not.toBe(calls[1][4]) // submissionId
+    expect(calls[0][5]).not.toBe(calls[1][5]) // retryReceipt
   })
 })

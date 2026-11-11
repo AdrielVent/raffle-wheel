@@ -22,8 +22,8 @@ describe('api functions', () => {
       data: {
         event: {
           id: 'test-event-id',
-          name: 'NASA Tech Expo',
-          slug: 'nasa2026',
+          name: 'Fall Career Mixer',
+          slug: 'fall-career-mixer',
           status: 'open',
           registration_open: true,
         },
@@ -31,11 +31,11 @@ describe('api functions', () => {
       error: null,
     })
 
-    const event = await getPublicEvent('nasa2026')
+    const event = await getPublicEvent('fall-career-mixer')
     expect(event).not.toBeNull()
-    expect(event?.name).toBe('NASA Tech Expo')
+    expect(event?.name).toBe('Fall Career Mixer')
     expect(mockInvoke).toHaveBeenCalledWith('public-event', {
-      body: { slug: 'nasa2026' },
+      body: { slug: 'fall-career-mixer' },
     })
   })
 

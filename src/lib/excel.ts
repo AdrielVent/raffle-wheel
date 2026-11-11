@@ -1,6 +1,7 @@
 import writeXlsxFile from 'write-excel-file/browser'
 
 export type AttendanceExportRow = {
+  id?: string
   first_name: string
   last_name: string
   hofstra_email?: string | null
@@ -51,25 +52,69 @@ export function formatUtcTimestamp(dateString?: string | null): string {
   }
 }
 
+/** Fill colour for raffle winners' rows (also kept when the file is opened in Google Sheets). */
+export const WINNER_FILL = '#FFFF00'
+
+type ExportCell = { type?: typeof String; value: string; fontWeight?: 'bold'; backgroundColor?: string }
+
 /**
  * Builds cell matrices with explicit text typing and formula injection prevention.
+ * Rows for attendees in `winnerIds` (picked by the wheel) are filled yellow.
  */
-export function buildAttendanceRows(eventName: string, entries: AttendanceExportRow[]) {
-  const rows: Array<Array<{ type?: typeof String; value: string; fontWeight?: 'bold' }>> = [
-    EXCEL_HEADERS,
-  ]
+export function buildAttendanceRows(
+  eventName: string,
+  entries: AttendanceExportRow[],
+  winnerIds: ReadonlySet<string> = new Set(),
+) {
+  const rows: ExportCell[][] = [EXCEL_HEADERS]
 
   for (const entry of entries) {
+    const fill = entry.id && winnerIds.has(entry.id) ? { backgroundColor: WINNER_FILL } : {}
     rows.push([
-      { type: String, value: sanitizeSpreadsheetText(eventName) },
-      { type: String, value: sanitizeSpreadsheetText(entry.first_name) },
-      { type: String, value: sanitizeSpreadsheetText(entry.last_name) },
-      { type: String, value: sanitizeSpreadsheetText(entry.hofstra_email ?? '') },
-      { type: String, value: formatUtcTimestamp(entry.checked_in_at) },
+      { type: String, value: sanitizeSpreadsheetText(eventName), ...fill },
+      { type: String, value: sanitizeSpreadsheetText(entry.first_name), ...fill },
+      { type: String, value: sanitizeSpreadsheetText(entry.last_name), ...fill },
+      { type: String, value: sanitizeSpreadsheetText(entry.hofstra_email ?? ''), ...fill },
+      { type: String, value: formatUtcTimestamp(entry.checked_in_at), ...fill },
     ])
   }
 
   return rows
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
+}
+
+/**
+ * Same table as the Excel export, as tab-separated text and as an HTML table. Pasting the
+ * HTML into Google Sheets keeps the yellow fill on the winners' rows.
+ */
+export function buildAttendanceClipboard(
+  eventName: string,
+  entries: AttendanceExportRow[],
+  winnerIds: ReadonlySet<string> = new Set(),
+) {
+  const rows = buildAttendanceRows(eventName, entries, winnerIds)
+  const text = rows.map((r) => r.map((c) => c.value.replace(/[\t\n]/g, ' ')).join('\t')).join('\n')
+  const html =
+    '<table>' +
+    rows
+      .map(
+        (r, i) =>
+          '<tr>' +
+          r
+            .map((c) => {
+              const tag = i === 0 ? 'th' : 'td'
+              const style = c.backgroundColor ? ` style="background-color:${c.backgroundColor}"` : ''
+              return `<${tag}${style}>${escapeHtml(c.value)}</${tag}>`
+            })
+            .join('') +
+          '</tr>',
+      )
+      .join('') +
+    '</table>'
+  return { text, html }
 }
 
 /**
@@ -79,8 +124,9 @@ export async function downloadAttendanceExcel(
   eventName: string,
   eventSlug: string,
   entries: AttendanceExportRow[],
+  winnerIds: ReadonlySet<string> = new Set(),
 ) {
-  const rows = buildAttendanceRows(eventName, entries)
+  const rows = buildAttendanceRows(eventName, entries, winnerIds)
   const safeSlug = (eventSlug || 'event').replace(/[^a-zA-Z0-9_-]/g, '_')
   const fileName = `${safeSlug}-attendance.xlsx`
 

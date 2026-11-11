@@ -2,7 +2,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-api-version',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
@@ -32,11 +32,11 @@ Deno.serve(async (request) => {
   const supabase = createClient(url, serviceRole)
   const { data, error } = await supabase
     .from('events')
-    .select('id,name,slug,status,registration_open')
+    .select('id,name,slug,status,registration_open,archived_at')
     .eq('slug', slug)
-    .single()
+    .maybeSingle()
 
-  if (error) {
+  if (error || !data) {
     return Response.json({ event: null }, { status: 200, headers: corsHeaders })
   }
 

@@ -39,13 +39,13 @@ describe('excel attendance export utilities', () => {
   })
 
   it('builds attendance rows for empty list with headers intact', () => {
-    const rows = buildAttendanceRows('NASA Event', [])
+    const rows = buildAttendanceRows('Fall Career Mixer', [])
     expect(rows).toHaveLength(1)
     expect(rows[0]).toEqual(EXCEL_HEADERS)
   })
 
   it('builds attendance rows including ineligible or winning entries with text types', () => {
-    const rows = buildAttendanceRows('NASA Tech Expo', [
+    const rows = buildAttendanceRows('Fall Career Mixer', [
       {
         first_name: 'Adriel',
         last_name: 'Ventura',
@@ -64,7 +64,7 @@ describe('excel attendance export utilities', () => {
 
     expect(rows).toHaveLength(3)
     // Row 1 (first entry)
-    expect(rows[1][0].value).toBe('NASA Tech Expo')
+    expect(rows[1][0].value).toBe('Fall Career Mixer')
     expect(rows[1][1].value).toBe('Adriel')
     expect(rows[1][2].value).toBe('Ventura')
     expect(rows[1][3].value).toBe('aventura2@hofstra.edu')
@@ -73,5 +73,32 @@ describe('excel attendance export utilities', () => {
     // Row 2 (sanitized injection attempt and preserved ineligible attendee)
     expect(rows[2][2].value).toBe('\'=DDE("server")')
     expect(rows[2][3].value).toBe('jdoe1@hofstra.edu')
+  })
+})
+
+describe('raffle winner highlighting', () => {
+  it('fills every cell of a winner’s row yellow and leaves others plain', async () => {
+    const { buildAttendanceRows, buildAttendanceClipboard, WINNER_FILL } = await import('./excel')
+    const entries = [
+      { id: 'a', first_name: 'Dana', last_name: 'Cruz', hofstra_email: 'dcruz4@hofstra.edu', checked_in_at: '2026-11-10T18:00:00Z' },
+      { id: 'b', first_name: 'Lee', last_name: 'Park', hofstra_email: 'lpark7@hofstra.edu', checked_in_at: '2026-11-10T18:01:00Z' },
+    ]
+    const rows = buildAttendanceRows('Fall Career Mixer', entries, new Set(['b']))
+    expect(WINNER_FILL).toBe('#FFFF00')
+    expect(rows[0].every((c) => !c.backgroundColor)).toBe(true) // header
+    expect(rows[1].every((c) => !c.backgroundColor)).toBe(true) // Dana
+    expect(rows[2].every((c) => c.backgroundColor === '#FFFF00')).toBe(true) // Lee won
+
+    const { text, html } = buildAttendanceClipboard('Fall Career Mixer', entries, new Set(['b']))
+    expect(text.split('\n')[0]).toBe('Event\tFirst Name\tLast Name\tHofstra Email\tCheck-in Time (UTC)')
+    expect(html).toContain('<td style="background-color:#FFFF00">Lee</td>')
+    expect(html).toContain('<td>Dana</td>')
+  })
+
+  it('escapes HTML in names for the Google Sheet copy', async () => {
+    const { buildAttendanceClipboard } = await import('./excel')
+    const { html } = buildAttendanceClipboard('Mixer', [{ id: 'x', first_name: '<b>Al</b>', last_name: 'O\'Neil', hofstra_email: 'a@hofstra.edu' }])
+    expect(html).toContain('&lt;b&gt;Al&lt;/b&gt;')
+    expect(html).not.toContain('<b>Al</b>')
   })
 })

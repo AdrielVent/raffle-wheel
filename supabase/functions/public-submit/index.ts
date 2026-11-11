@@ -5,7 +5,7 @@ const hofstraDomain = 'hofstra.edu'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-api-version',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
@@ -80,16 +80,16 @@ Deno.serve(async (request) => {
   const retryReceipt = typeof body?.retryReceipt === 'string' ? body.retryReceipt : ''
 
   if (!slug || !submissionId || !retryReceipt) {
-    return Response.json({ status: 'invalid_event' }, { status: 400, headers: corsHeaders })
+    return Response.json({ status: 'invalid_event' }, { status: 200, headers: corsHeaders })
   }
 
   if (!namePattern.test(firstName) || !namePattern.test(lastName)) {
-    return Response.json({ status: 'invalid_name' }, { status: 400, headers: corsHeaders })
+    return Response.json({ status: 'invalid_name' }, { status: 200, headers: corsHeaders })
   }
 
   const emailValidation = normalizeHofstraUsername(hofstraUsername)
   if (!emailValidation.ok) {
-    return Response.json({ status: 'invalid_email' }, { status: 400, headers: corsHeaders })
+    return Response.json({ status: 'invalid_email' }, { status: 200, headers: corsHeaders })
   }
 
   const url = Deno.env.get('SUPABASE_URL')
@@ -103,15 +103,15 @@ Deno.serve(async (request) => {
 
   const { data: event } = await supabase
     .from('events')
-    .select('id,status,registration_open')
+    .select('id,status,registration_open,archived_at')
     .eq('slug', slug)
     .maybeSingle()
 
   if (!event) {
-    return Response.json({ status: 'invalid_event' }, { status: 404, headers: corsHeaders })
+    return Response.json({ status: 'invalid_event' }, { status: 200, headers: corsHeaders })
   }
 
-  if (event.status === 'ended') {
+  if (event.status === 'ended' || event.archived_at) {
     return Response.json({ status: 'ended' }, { status: 200, headers: corsHeaders })
   }
 
@@ -130,7 +130,7 @@ Deno.serve(async (request) => {
   })
 
   if (!canProceed) {
-    return Response.json({ status: 'rate_limited' }, { status: 429, headers: corsHeaders })
+    return Response.json({ status: 'rate_limited' }, { status: 200, headers: corsHeaders })
   }
 
   // Check if this specific submission_id was already accepted
@@ -177,6 +177,10 @@ Deno.serve(async (request) => {
     .insert(insertPayload)
     .select('retry_receipt')
     .maybeSingle()
+
+  if (insertError) {
+    console.error('public-submit insert failed', insertError.code, insertError.message)
+  }
 
   if (!insertError && inserted) {
     return Response.json({ status: 'accepted', receipt_id: inserted.retry_receipt }, { status: 200, headers: corsHeaders })

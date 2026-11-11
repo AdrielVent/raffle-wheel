@@ -1,4 +1,3 @@
-import { broadcastCheckIn } from './cloudSync'
 import { normalizeHofstraUsername } from './hofstraEmail'
 import { supabase } from './supabase'
 import { validateFullName } from './validation'
@@ -9,6 +8,7 @@ export type PublicEvent = {
   slug: string
   status: 'open' | 'closed' | 'ended'
   registration_open: boolean
+  archived_at?: string | null
 }
 
 export type SubmissionResponse = {
@@ -35,10 +35,10 @@ function requireSupabase() {
   return supabase
 }
 
-export async function getPublicEvent(slug: string): Promise<PublicEvent | null> {
+export async function getPublicEvent(slug: string, eventId?: string | null): Promise<PublicEvent | null> {
   const client = requireSupabase()
   const { data, error } = await client.functions.invoke('public-event', {
-    body: { slug },
+    body: eventId ? { slug, eventId } : { slug },
   })
 
   if (error) {
@@ -92,20 +92,9 @@ export async function submitEntry(
     throw error
   }
 
-  const response = data as SubmissionResponse
-  if (response?.status === 'accepted') {
-    void broadcastCheckIn({
-      id: submissionId,
-      event_id: response?.event_id || eventId || 'evt-nasa-2026',
-      first_name: validation.first.value,
-      last_name: validation.last.value,
-      hofstra_email: `${emailValidation.username.toLowerCase()}@hofstra.edu`,
-      checked_in_at: new Date().toISOString(),
-      ineligible: false,
-    })
-  }
-
-  return response
+  // Cross-device relay broadcast (no-Supabase mode) happens inside the backend that
+  // accepted the entry, so it is published exactly once.
+  return data as SubmissionResponse
 }
 
 export async function createEvent(name: string) {
@@ -129,6 +118,20 @@ export async function endEvent(eventId: string) {
   const client = requireSupabase()
   const { error } = await client.rpc('end_raffle_event', {
     p_event_id: eventId,
+  })
+
+  if (error) throw error
+}
+
+/**
+ * Archives (or restores) a completed event. Archiving ends the event — no new check-ins
+ * or draws — and moves it out of the active list while keeping attendance and draw history.
+ */
+export async function archiveEvent(eventId: string, archived: boolean) {
+  const client = requireSupabase()
+  const { error } = await client.rpc('archive_raffle_event', {
+    p_event_id: eventId,
+    p_archived: archived,
   })
 
   if (error) throw error

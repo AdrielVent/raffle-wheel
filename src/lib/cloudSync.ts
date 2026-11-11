@@ -4,6 +4,18 @@ import { normalizeHofstraUsername } from './hofstraEmail'
 export const NTFY_TOPIC = 'raffle_wheel_nasa_space_apps_entries_v1'
 export const NTFY_ENDPOINT = `https://ntfy.envs.net/${NTFY_TOPIC}`
 export const NTFY_EVENTS_ENDPOINT = `https://ntfy.envs.net/raffle_wheel_events_channel_v1`
+
+export function getEventTopic(eventId?: string): string {
+  if (!eventId || eventId === 'evt-nasa-2026') {
+    return 'raffle_wheel_nasa_space_apps_entries_v1'
+  }
+  const clean = eventId.toLowerCase().replace(/[^a-z0-9_-]/g, '_')
+  return `raffle_evt_${clean}`
+}
+
+export function getEventEndpoint(eventId?: string): string {
+  return `https://ntfy.envs.net/${getEventTopic(eventId)}`
+}
 export const GOOGLE_SHEET_URL =
   'https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/edit?usp=sharing'
 export const GOOGLE_SHEET_GVIZ =
@@ -82,8 +94,9 @@ function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 35
  */
 export async function broadcastClearEvent(eventId: string, clearedAt: string): Promise<void> {
   try {
+    const endpoint = getEventEndpoint(eventId)
     await fetchWithTimeout(
-      NTFY_ENDPOINT,
+      endpoint,
       {
         method: 'POST',
         body: JSON.stringify({ action: 'clear', event_id: eventId, cleared_at: clearedAt }),
@@ -129,8 +142,9 @@ export async function broadcastCheckIn(entry: {
   ineligible?: boolean
 }): Promise<void> {
   try {
+    const endpoint = getEventEndpoint(entry.event_id)
     await fetchWithTimeout(
-      NTFY_ENDPOINT,
+      endpoint,
       {
         method: 'POST',
         body: JSON.stringify(entry),
@@ -149,9 +163,10 @@ export async function broadcastCheckIn(entry: {
 /**
  * Fetches all cross-device check-ins from the cloud cache.
  */
-export async function fetchRemoteCheckIns(): Promise<EntryRow[]> {
+export async function fetchRemoteCheckIns(eventId?: string): Promise<EntryRow[]> {
   try {
-    const res = await fetchWithTimeout(`${NTFY_ENDPOINT}/json?poll=1&since=all`, {}, 3000)
+    const endpoint = getEventEndpoint(eventId)
+    const res = await fetchWithTimeout(`${endpoint}/json?poll=1&since=all`, {}, 3000)
     if (!res.ok) return []
     const text = await res.text()
     const lines = text.split('\n').filter(Boolean)
@@ -257,13 +272,17 @@ export async function fetchGoogleSheetCheckIns(eventId: string): Promise<EntryRo
 /**
  * Subscribes to live cross-device Server-Sent Events (SSE).
  */
-export function subscribeToLiveCheckIns(onNewEntry: (entry: EntryRow) => void): () => void {
+export function subscribeToLiveCheckIns(
+  onNewEntry: (entry: EntryRow) => void,
+  eventId?: string,
+): () => void {
   if (typeof window === 'undefined' || typeof window.EventSource === 'undefined') {
     return () => {}
   }
 
   try {
-    const es = new EventSource(`${NTFY_ENDPOINT}/sse`)
+    const endpoint = getEventEndpoint(eventId)
+    const es = new EventSource(`${endpoint}/sse`)
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
@@ -348,7 +367,7 @@ export async function syncAllRemoteCheckIns(eventId = 'evt-nasa-2026'): Promise<
   if (typeof window === 'undefined' || !window.localStorage) return []
   try {
     const [remoteEntries, sheetEntries] = await Promise.all([
-      fetchRemoteCheckIns(),
+      fetchRemoteCheckIns(eventId),
       fetchGoogleSheetCheckIns(eventId),
     ])
 

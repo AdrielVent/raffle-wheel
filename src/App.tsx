@@ -801,7 +801,7 @@ export function HostDashboard() {
     const unsubscribeCloud = subscribeToLiveCheckIns((entry) => {
       syncIncomingEntry(entry)
       void refreshEventDetails(selectedEventId)
-    })
+    }, selectedEventId)
 
     if (!supabase) {
       return () => {
@@ -828,10 +828,10 @@ export function HostDashboard() {
       )
       .subscribe()
 
-    // Active sync poll every 3s to guarantee cross-device delivery
+    // Active sync poll every 20s as fallback (SSE delivers in real time)
     const interval = setInterval(() => {
       refreshEventDetails(selectedEventId)
-    }, 3000)
+    }, 20000)
 
     const handleSync = () => {
       refreshEventDetails(selectedEventId)
@@ -1711,15 +1711,15 @@ export function ProjectorModePage() {
         setTimeout(() => setRecentAttendee(null), 5000)
       }
       readLocalEntries()
-    })
+    }, eventId)
 
     // Poll localStorage every 1.5s for local changes (same-device or storage events)
     const localInterval = setInterval(readLocalEntries, 1500)
 
-    // Poll ntfy.sh every 4s to merge remote check-ins from other devices
+    // Poll cloud every 25s as gentle fallback (SSE is primary real-time push)
     const remoteInterval = setInterval(() => {
       void syncAllRemoteCheckIns(eventId).then(() => readLocalEntries())
-    }, 4000)
+    }, 25000)
 
     // Listen for storage events (same-browser cross-tab) and custom events
     window.addEventListener('storage', readLocalEntries)

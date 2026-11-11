@@ -186,10 +186,10 @@ function HomePage() {
     <main className="container narrow">
       <header className="page-header">
         <div className="ipod-status-bar">
-          <span className="status-title">QR Raffle Wheel</span>
+          <span className="status-title">VNUA CHECK IN</span>
           <span className="status-time">Live Events</span>
         </div>
-        <h1>QR Raffle Wheel</h1>
+        <h1>VNUA CHECK IN</h1>
         <p className="subtitle">Event check-in and server-authoritative raffle drawings</p>
       </header>
 

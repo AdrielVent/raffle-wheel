@@ -1,7 +1,7 @@
 {
-  "name": "Raffle Wheel",
-  "short_name": "Raffle",
-  "description": "Event check-in and live raffle wheel.",
+  "name": "VNUA CHECK IN",
+  "short_name": "VNUA CHECK IN",
+  "description": "VNUA event check-in and live raffle wheel.",
   "id": "/raffle-wheel/",
   "start_url": "/raffle-wheel/#/",
   "scope": "/raffle-wheel/",

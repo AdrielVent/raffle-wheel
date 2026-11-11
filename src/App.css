@@ -1151,3 +1151,15 @@ input[type='checkbox'] {
   width: fit-content;
   font-weight: 700;
 }
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 420px;
+}
+
+.state-banner a {
+  text-decoration: underline;
+  font-weight: 700;
+}

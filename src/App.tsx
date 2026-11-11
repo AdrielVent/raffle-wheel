@@ -105,6 +105,7 @@ function HomePage() {
   const [events, setEvents] = useState<EventRow[]>([])
   const [newEventName, setNewEventName] = useState('')
   const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
 
   const loadEvents = useCallback(async () => {
     if (!supabase) return
@@ -140,6 +141,7 @@ function HomePage() {
     e.preventDefault()
     if (!newEventName.trim() || creating) return
     setCreating(true)
+    setCreateError(null)
     try {
       const created = await createEvent(newEventName)
       setNewEventName('')
@@ -153,6 +155,12 @@ function HomePage() {
       } else {
         navigate('/host')
       }
+    } catch (err) {
+      setCreateError(
+        isLiveBackendConfigured
+          ? 'Sign in on the Host Dashboard first, then create your event there.'
+          : `Could not create event: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      )
     } finally {
       setCreating(false)
     }
@@ -193,6 +201,11 @@ function HomePage() {
               {creating ? 'Creating…' : 'Create Event & Get QR'}
             </button>
           </form>
+          {createError && (
+            <p className="state-banner error" role="alert">
+              {createError} <Link to="/host">Go to Host Dashboard →</Link>
+            </p>
+          )}
         </div>
       </section>
 
@@ -665,6 +678,9 @@ export function HostDashboard() {
 
   const [sessionReady, setSessionReady] = useState(() => !supabase || !isBackendConfigured)
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [hostEmail, setHostEmail] = useState<string | null>(null)
+  const [authBusy, setAuthBusy] = useState(false)
   const [authMessage, setAuthMessage] = useState<string | null>(null)
   const [events, setEvents] = useState<EventRow[]>([])
   const [entries, setEntries] = useState<EntryRow[]>([])
@@ -788,15 +804,26 @@ export function HostDashboard() {
   useEffect(() => {
     if (!supabase) return
 
-    supabase.auth.getSession().finally(async () => {
-      await refreshEvents()
-      setSessionReady(true)
-    })
+    supabase.auth
+      .getSession()
+      .then(({ data }: { data: { session: { user?: { email?: string } } | null } }) => {
+        setHostEmail(data.session?.user?.email ?? null)
+      })
+      .finally(async () => {
+        await refreshEvents()
+        setSessionReady(true)
+      })
 
-    const { data } = supabase.auth.onAuthStateChange(async () => {
-      await refreshEvents()
-      setSessionReady(true)
-    })
+    // Never await Supabase calls inside onAuthStateChange (supabase-js can deadlock on its
+    // auth lock); defer the refresh to the next tick instead.
+    const { data } = supabase.auth.onAuthStateChange(
+      (_event: string, session: { user?: { email?: string } } | null) => {
+        setHostEmail(session?.user?.email ?? null)
+        setTimeout(() => {
+          void refreshEvents().finally(() => setSessionReady(true))
+        }, 0)
+      },
+    )
 
     return () => data.subscription.unsubscribe()
   }, [refreshEvents])
@@ -892,20 +919,63 @@ export function HostDashboard() {
       .catch(() => setQrDataUrl(null))
   }, [entryLink])
 
-  async function onSignIn() {
-    if (!supabase) return
-    const redirectUrl = window.location.origin + window.location.pathname
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: redirectUrl },
-    })
-    setAuthMessage(error ? error.message : 'Check your email for the sign-in link.')
+  // Email + password sign-in happens entirely inside the app. Magic links don't work for
+  // an iPhone/iPad Home Screen web app: the link opens in Safari, whose storage is
+  // separate from the Home Screen app, so the host would never be signed in there.
+  async function onSignIn(event?: FormEvent) {
+    event?.preventDefault()
+    if (!supabase || authBusy) return
+    setAuthBusy(true)
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+      if (error) {
+        setAuthMessage(
+          /confirm/i.test(error.message)
+            ? 'Confirm your email first (check your inbox), then sign in here.'
+            : `Sign-in failed: ${error.message}`,
+        )
+      } else {
+        setPassword('')
+        setAuthMessage(null)
+      }
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function onCreateHostAccount() {
+    if (!supabase || authBusy) return
+    if (!email.trim() || password.length < 8) {
+      setAuthMessage('Enter your email and a password of at least 8 characters.')
+      return
+    }
+    setAuthBusy(true)
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: { emailRedirectTo: window.location.origin + window.location.pathname },
+      })
+      if (error) {
+        setAuthMessage(`Could not create account: ${error.message}`)
+      } else if (data?.session) {
+        setPassword('')
+        setAuthMessage('Host account created. You are signed in.')
+      } else {
+        setAuthMessage(
+          'Account created. Open the confirmation email (any browser is fine), then come back and sign in here with your password.',
+        )
+      }
+    } finally {
+      setAuthBusy(false)
+    }
   }
 
   async function onSignOut() {
     if (!supabase) return
     await supabase.auth.signOut()
     setSelectedEventId(null)
+    setEvents([])
     setEntries([])
     setDraws([])
   }
@@ -1284,21 +1354,52 @@ export function HostDashboard() {
           <span className="ipod-battery-icon" />
         </div>
         <div className="ipod-card-content">
-          <h2>Host Authentication</h2>
-          <div className="row wrap">
-            <input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              type="email"
-              placeholder="host@example.edu"
-            />
-            <button className="button" type="button" onClick={onSignIn}>
-              Send Sign-In Link
-            </button>
-            <button className="button secondary" type="button" onClick={onSignOut}>
-              Sign Out
-            </button>
-          </div>
+          <h2>Host Account</h2>
+          {hostEmail ? (
+            <div className="row wrap">
+              <p className="status-note">Signed in as {hostEmail}</p>
+              <button className="button secondary" type="button" onClick={onSignOut}>
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <form className="auth-form" onSubmit={onSignIn}>
+              <p className="subtitle">
+                Sign in to create events and see attendance. Your events are private to your account.
+              </p>
+              <label>
+                Email
+                <input
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  type="email"
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  placeholder="you@hofstra.edu"
+                  required
+                />
+              </label>
+              <label>
+                Password
+                <input
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  type="password"
+                  autoComplete="current-password"
+                  minLength={8}
+                  required
+                />
+              </label>
+              <div className="row wrap">
+                <button className="button" type="submit" disabled={authBusy}>
+                  {authBusy ? 'Signing in…' : 'Sign In'}
+                </button>
+                <button className="button secondary" type="button" onClick={() => void onCreateHostAccount()} disabled={authBusy}>
+                  Create Host Account
+                </button>
+              </div>
+            </form>
+          )}
           {authMessage && <p className="status-note">{authMessage}</p>}
         </div>
       </section>

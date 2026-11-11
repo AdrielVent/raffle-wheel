@@ -982,3 +982,98 @@ input:focus {
     gap: 0.75rem;
   }
 }
+
+/* ==========================================================================
+   iOS / iPadOS / macOS Safari standalone polish
+   - 44x44pt minimum touch targets (Apple HIG)
+   - 16px input text so Safari never auto-zooms on focus
+   - No grey tap flash, no double-tap zoom delay
+   ========================================================================== */
+.button,
+.refresh-btn,
+.event-card,
+.link,
+button,
+select,
+summary {
+  min-height: 44px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.button,
+.refresh-btn,
+button {
+  min-width: 44px;
+}
+
+.button.danger-text {
+  min-height: 44px;
+  padding: 0.5rem 0.85rem;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  color: #0071e3;
+  font-weight: 600;
+}
+
+input:not([type='checkbox']):not([type='radio']),
+select,
+textarea {
+  min-height: 44px;
+  font-size: 16px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.input-with-suffix input {
+  font-size: 16px;
+}
+
+.pin-input {
+  font-size: 1.4rem;
+}
+
+input[type='checkbox'] {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: #0071e3;
+  flex-shrink: 0;
+}
+
+.inline-control {
+  min-height: 44px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Landscape iPhone: keep content clear of the notch on the sides */
+@supports (padding-top: env(safe-area-inset-top)) {
+  .container {
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+  }
+}
+
+@media (max-width: 480px) {
+  .button,
+  .button.primary-action {
+    min-height: 48px;
+  }
+
+  .wheel-shell {
+    min-height: 0;
+    padding: 2rem 0.5rem;
+  }
+
+  .wheel {
+    width: min(84vw, 460px);
+    height: min(84vw, 460px);
+  }
+
+  .entry-list li {
+    flex-wrap: wrap;
+  }
+}

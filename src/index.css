@@ -7,19 +7,55 @@
   background-color: #f2f2f7;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  background-color: #f2f2f7;
+  /* No double-tap-to-zoom delay anywhere in the app */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   background: #f2f2f7;
   background-image: linear-gradient(180deg, #f7f7fa 0%, #ebebef 50%, #e2e2e8 100%);
   background-attachment: fixed;
   color: #1d1d1f;
+  /* Keep content clear of the notch / Dynamic Island / home indicator
+     (viewport-fit=cover + black-translucent status bar draws under them) */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  overscroll-behavior-y: none;
+}
+
+/* iOS ignores background-attachment: fixed and repaints on scroll */
+@supports (-webkit-touch-callout: none) {
+  body {
+    background-attachment: scroll;
+  }
+}
+
+a,
+button,
+input,
+select,
+textarea,
+label,
+summary,
+[role='button'] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 a {

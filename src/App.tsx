@@ -24,7 +24,7 @@ import {
   setRegistration,
   submitEntry,
 } from './lib/api'
-import { isBackendConfigured, isLiveBackendConfigured } from './lib/env'
+import { isBackendConfigured } from './lib/env'
 import { findDuplicateNameIds } from './lib/duplicates'
 import {
   clearEventCloudSync,
@@ -92,6 +92,78 @@ function BackendRequiredMessage() {
 }
 
 function HomePage() {
+  const navigate = useNavigate()
+  const [events, setEvents] = useState<EventRow[]>([])
+  const [newEventName, setNewEventName] = useState('')
+  const [creating, setCreating] = useState(false)
+
+  const loadEvents = useCallback(async () => {
+    if (!supabase) return
+    try {
+      const remote = await fetchRemoteEvents()
+      if (remote.length > 0) {
+        const raw = localStorage.getItem('raffle_mock_events_v1')
+        const current: EventRow[] = raw ? JSON.parse(raw) : []
+        let changed = false
+        for (const re of remote) {
+          if (!current.some((c) => c.slug === re.slug)) {
+            current.unshift(re)
+            changed = true
+          }
+        }
+        if (changed) {
+          localStorage.setItem('raffle_mock_events_v1', JSON.stringify(current))
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      const { data } = await supabase
+        .from('events')
+        .select('*')
+        .order('created_at', { ascending: false })
+      if (data) {
+        setEvents(data as EventRow[])
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadEvents()
+    window.addEventListener('storage', loadEvents)
+    window.addEventListener('raffle_demo_change', loadEvents)
+    return () => {
+      window.removeEventListener('storage', loadEvents)
+      window.removeEventListener('raffle_demo_change', loadEvents)
+    }
+  }, [loadEvents])
+
+  async function handleQuickCreate(e: FormEvent) {
+    e.preventDefault()
+    if (!newEventName.trim() || creating) return
+    setCreating(true)
+    try {
+      const created = await createEvent(newEventName)
+      setNewEventName('')
+      if (created && typeof created === 'object' && 'id' in created) {
+        try {
+          sessionStorage.setItem('raffle_selected_event_id', created.id as string)
+        } catch {
+          // ignore
+        }
+        navigate(`/host?event=${created.id}`)
+      } else {
+        navigate('/host')
+      }
+    } finally {
+      setCreating(false)
+    }
+  }
+
   return (
     <main className="container narrow">
       <header className="page-header">
@@ -103,41 +175,100 @@ function HomePage() {
         <p className="subtitle">Event check-in and server-authoritative raffle drawings</p>
       </header>
 
-      {!isLiveBackendConfigured && (
-        <section className="panel ipod-card">
-          <div className="ipod-screen-bar">
-            <span>Test Mode Active</span>
-            <span className="ipod-battery-icon" />
-          </div>
-          <div className="ipod-card-content">
-            <h2>Interactive Test Mode</h2>
-            <p className="subtitle">
-              Running with in-browser persistence. Test the complete attendee check-in, confirmation
-              screen, host dashboard, and live raffle wheel immediately.
-            </p>
-            <div className="row wrap">
-              <Link className="button" to="/e/nasa-space-apps">
-                Test Attendee Check-In
-              </Link>
-              <Link className="button secondary" to="/host">
-                Host Dashboard
-              </Link>
-              <Link className="button secondary" to="/host/projector/evt-nasa-2026">
-                Projector Wheel
-              </Link>
-            </div>
-          </div>
-        </section>
-      )}
-
       <section className="panel ipod-card">
         <div className="ipod-screen-bar">
-          <span>Host Navigation</span>
+          <span>Create New Event</span>
           <span className="ipod-battery-icon" />
         </div>
         <div className="ipod-card-content">
-          <h2>Host Controls</h2>
-          <p>Manage events, download attendance workbooks, and run fair raffle drawings.</p>
+          <h2>Add Event & Generate QR</h2>
+          <p className="subtitle">
+            Create any event (e.g. Science Fair, Tech Expo, Meeting #1). A unique QR code and
+            live check-in link will be generated instantly.
+          </p>
+          <form onSubmit={handleQuickCreate} className="row wrap">
+            <input
+              type="text"
+              value={newEventName}
+              onChange={(e) => setNewEventName(e.target.value)}
+              placeholder="Event Name (e.g. Science Fair, Meeting #1)"
+              required
+              style={{ flex: '1 1 240px' }}
+            />
+            <button className="button" type="submit" disabled={creating}>
+              {creating ? 'Creating…' : 'Create Event & Get QR'}
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <section className="panel ipod-card">
+        <div className="ipod-screen-bar">
+          <span>Active Events</span>
+          <span className="ipod-battery-icon" />
+        </div>
+        <div className="ipod-card-content">
+          <div className="row wrap space-between align-center">
+            <h2>Your Events</h2>
+            <Link className="button secondary" to="/host">
+              Host Dashboard (PIN: 0828)
+            </Link>
+          </div>
+          {events.length === 0 ? (
+            <p className="empty-text">
+              No events created yet. Enter an event name above to generate your first QR code!
+            </p>
+          ) : (
+            <div className="event-list-stack" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
+              {events.map((event) => {
+                const checkInUrl = `/e/${event.slug}?name=${encodeURIComponent(event.name)}&id=${encodeURIComponent(event.id)}`
+                const projectorUrl = `/host/projector/${event.id}?name=${encodeURIComponent(event.name)}`
+                const hostUrl = `/host?event=${encodeURIComponent(event.id)}`
+                return (
+                  <div
+                    key={event.id}
+                    className="event-card-item"
+                    style={{
+                      padding: '1rem',
+                      background: 'rgba(255, 255, 255, 0.7)',
+                      borderRadius: '12px',
+                      border: '1px solid #d1d1d6',
+                    }}
+                  >
+                    <div className="row wrap space-between align-center" style={{ marginBottom: '0.75rem' }}>
+                      <strong style={{ fontSize: '1.15rem' }}>{event.name}</strong>
+                      <span className={`status-badge status-${event.status}`}>{event.status}</span>
+                    </div>
+                    <div className="row wrap gap-sm">
+                      <Link className="button" to={checkInUrl}>
+                        📱 Attendee Check-In
+                      </Link>
+                      <Link className="button secondary" to={projectorUrl}>
+                        🎡 Projector Wheel
+                      </Link>
+                      <Link className="button secondary" to={hostUrl}>
+                        📋 Host & QR Code
+                      </Link>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="panel ipod-card">
+        <div className="ipod-screen-bar">
+          <span>Host Access</span>
+          <span className="ipod-battery-icon" />
+        </div>
+        <div className="ipod-card-content">
+          <h2>Host Administration</h2>
+          <p>
+            Access host controls to download genuine Excel rosters, exclude participants, or spin the
+            live raffle wheel. Default PIN: <strong>0828</strong>.
+          </p>
           <div className="actions">
             <Link className="button" to="/host">
               Host Dashboard
@@ -510,7 +641,32 @@ export function HostDashboard() {
   const [events, setEvents] = useState<EventRow[]>([])
   const [entries, setEntries] = useState<EntryRow[]>([])
   const [draws, setDraws] = useState<DrawRow[]>([])
-  const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const hash = window.location.hash
+        if (hash.includes('?')) {
+          const sp = new URLSearchParams(hash.split('?')[1])
+          const ev = sp.get('event')
+          if (ev) return ev
+        }
+        return sessionStorage.getItem('raffle_selected_event_id') || null
+      }
+    } catch {
+      // ignore
+    }
+    return null
+  })
+
+  useEffect(() => {
+    if (selectedEventId) {
+      try {
+        sessionStorage.setItem('raffle_selected_event_id', selectedEventId)
+      } catch {
+        // ignore
+      }
+    }
+  }, [selectedEventId])
   const [newEventName, setNewEventName] = useState('')
   const [search, setSearch] = useState('')
   const [removeWinners, setRemoveWinners] = useState(true)
@@ -576,7 +732,12 @@ export function HostDashboard() {
     if (!error && data) {
       const loaded = data as EventRow[]
       setEvents(loaded)
-      setSelectedEventId((prev) => prev ?? (loaded[0] ? loaded[0].id : null))
+      setSelectedEventId((prev) => {
+        if (prev && loaded.some((e) => e.id === prev)) return prev
+        const saved = sessionStorage.getItem('raffle_selected_event_id')
+        if (saved && loaded.some((e) => e.id === saved)) return saved
+        return loaded[0] ? loaded[0].id : null
+      })
     }
   }, [])
 
@@ -744,7 +905,13 @@ export function HostDashboard() {
     setNewEventName('')
     await refreshEvents()
     if (created && typeof created === 'object' && 'id' in created) {
-      setSelectedEventId(created.id as string)
+      const id = created.id as string
+      setSelectedEventId(id)
+      try {
+        sessionStorage.setItem('raffle_selected_event_id', id)
+      } catch {
+        // ignore
+      }
     }
   }
 
@@ -1129,7 +1296,11 @@ export function HostDashboard() {
                   <button
                     className="button secondary"
                     type="button"
-                    onClick={() => navigate(`/host/projector/${selectedEvent.id}`)}
+                    onClick={() =>
+                      navigate(
+                        `/host/projector/${selectedEvent.id}?name=${encodeURIComponent(selectedEvent.name)}`,
+                      )
+                    }
                   >
                     Projector Mode
                   </button>
@@ -1223,9 +1394,14 @@ export function HostDashboard() {
                   onClick={() => {
                     if (
                       window.confirm(
-                        'Delete this event and all its data? This action cannot be undone.',
+                        `Delete "${selectedEvent.name}" and all its data? This action cannot be undone.`,
                       )
                     ) {
+                      try {
+                        sessionStorage.removeItem('raffle_selected_event_id')
+                      } catch {
+                        // ignore
+                      }
                       deleteEventData(selectedEvent.id).then(() => {
                         setSelectedEventId(null)
                         refreshEvents()
@@ -1233,7 +1409,7 @@ export function HostDashboard() {
                     }
                   }}
                 >
-                  Delete Event Data
+                  Delete Event
                 </button>
               </div>
             </div>
@@ -1398,7 +1574,40 @@ export function HostDashboard() {
 export function ProjectorModePage() {
   const params = useParams()
   const eventId = params.eventId ?? ''
-  const [eventData, setEventData] = useState<EventRow | null>(null)
+  const [searchParams] = useSearchParams()
+
+  let nameFromUrl = searchParams.get('name')
+  if (!nameFromUrl && typeof window !== 'undefined' && window.location.hash.includes('?')) {
+    try {
+      const qStr = window.location.hash.split('?')[1]
+      const sp = new URLSearchParams(qStr)
+      nameFromUrl = sp.get('name')
+    } catch {
+      // ignore
+    }
+  }
+
+  const [eventData, setEventData] = useState<EventRow | null>(() => {
+    try {
+      const evRaw = localStorage.getItem('raffle_mock_events_v1')
+      const events: EventRow[] = evRaw ? JSON.parse(evRaw) : []
+      const ev = events.find((e) => e.id === eventId)
+      if (ev) return ev
+    } catch {
+      // ignore
+    }
+    if (eventId && nameFromUrl) {
+      return {
+        id: eventId,
+        name: decodeURIComponent(nameFromUrl),
+        slug: `evt-${eventId}`,
+        status: 'open',
+        registration_open: true,
+        created_at: new Date().toISOString(),
+      }
+    }
+    return null
+  })
   const [entries, setEntries] = useState<EntryRow[]>([])
   const [draw, setDraw] = useState<DrawRow | null>(null)
   const [rotation, setRotation] = useState(0)
@@ -1417,7 +1626,7 @@ export function ProjectorModePage() {
       const raw = localStorage.getItem('raffle_mock_entries_v1')
       const all: EntryRow[] = raw ? JSON.parse(raw) : []
       const filtered = all
-        .filter((e) => !e.event_id || e.event_id === eventId)
+        .filter((e) => e.event_id === eventId || (!e.event_id && eventId === 'evt-nasa-2026'))
         .sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
       setEntries(filtered)
     } catch {
@@ -1428,7 +1637,7 @@ export function ProjectorModePage() {
       const dRaw = localStorage.getItem('raffle_mock_draws_v1')
       const draws: DrawRow[] = dRaw ? JSON.parse(dRaw) : []
       const latest = draws
-        .filter((d) => !d.event_id || d.event_id === eventId)
+        .filter((d) => d.event_id === eventId || (!d.event_id && eventId === 'evt-nasa-2026'))
         .sort((a, b) => (a.created_at > b.created_at ? -1 : 1))[0]
       if (latest) setDraw(latest)
     } catch {
@@ -1464,7 +1673,17 @@ export function ProjectorModePage() {
     try {
       const evRaw = localStorage.getItem('raffle_mock_events_v1')
       const events: EventRow[] = evRaw ? JSON.parse(evRaw) : []
-      const ev = events.find((e) => e.id === eventId) ?? null
+      let ev = events.find((e) => e.id === eventId) ?? null
+      if (!ev && nameFromUrl) {
+        ev = {
+          id: eventId,
+          name: decodeURIComponent(nameFromUrl),
+          slug: `evt-${eventId}`,
+          status: 'open',
+          registration_open: true,
+          created_at: new Date().toISOString(),
+        }
+      }
       if (ev) {
         setEventData(ev)
         const url = `${window.location.origin}${window.location.pathname}#/e/${ev.slug}?name=${encodeURIComponent(ev.name)}&id=${encodeURIComponent(ev.id)}`
@@ -1487,8 +1706,10 @@ export function ProjectorModePage() {
     // Subscribe to live cross-device check-ins from phones via SSE
     const unsubscribeCloud = subscribeToLiveCheckIns((entry) => {
       syncIncomingEntry(entry)
-      setRecentAttendee(`${entry.first_name} ${entry.last_name}`)
-      setTimeout(() => setRecentAttendee(null), 5000)
+      if (entry.event_id === eventId || (!entry.event_id && eventId === 'evt-nasa-2026')) {
+        setRecentAttendee(`${entry.first_name} ${entry.last_name}`)
+        setTimeout(() => setRecentAttendee(null), 5000)
+      }
       readLocalEntries()
     })
 

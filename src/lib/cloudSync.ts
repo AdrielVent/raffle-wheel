@@ -162,9 +162,15 @@ export async function fetchRemoteCheckIns(): Promise<EntryRow[]> {
         const parsed = JSON.parse(line)
         if (parsed.message) {
           const entry = JSON.parse(parsed.message) as EntryRow
-          if (entry.first_name && entry.hofstra_email) {
+          if (entry.first_name && entry.hofstra_email && entry.event_id) {
             const normalized = entry.hofstra_email.toLowerCase().trim()
-            if (!list.some((e) => e.hofstra_email.toLowerCase().trim() === normalized)) {
+            if (
+              !list.some(
+                (e) =>
+                  e.event_id === entry.event_id &&
+                  e.hofstra_email.toLowerCase().trim() === normalized,
+              )
+            ) {
               list.push(entry)
             }
           }
@@ -314,7 +320,7 @@ export function syncIncomingEntry(entry: EntryRow): boolean {
 
     const exists = entries.some(
       (e) =>
-        (e.event_id === targetEvent || !e.event_id) &&
+        e.event_id === targetEvent &&
         e.hofstra_email.toLowerCase().trim() === normalizedEmail,
     )
 
@@ -350,7 +356,9 @@ export async function syncAllRemoteCheckIns(eventId = 'evt-nasa-2026'): Promise<
     if (allInbound.length === 0) {
       const raw = localStorage.getItem(STORAGE_KEY_ENTRIES)
       const current: EntryRow[] = raw ? JSON.parse(raw) : []
-      return current.filter((e) => !e.event_id || e.event_id === eventId)
+      return current.filter(
+        (e) => e.event_id === eventId || (!e.event_id && eventId === 'evt-nasa-2026'),
+      )
     }
 
     const raw = localStorage.getItem(STORAGE_KEY_ENTRIES)
@@ -371,7 +379,7 @@ export async function syncAllRemoteCheckIns(eventId = 'evt-nasa-2026'): Promise<
       const normalizedEmail = inbound.hofstra_email.toLowerCase().trim()
       const exists = localEntries.some(
         (e) =>
-          (e.event_id === targetEvent || !e.event_id) &&
+          e.event_id === targetEvent &&
           e.hofstra_email.toLowerCase().trim() === normalizedEmail,
       )
 
@@ -395,10 +403,14 @@ export async function syncAllRemoteCheckIns(eventId = 'evt-nasa-2026'): Promise<
       window.dispatchEvent(new Event('raffle_demo_change'))
     }
 
-    return localEntries.filter((e) => !e.event_id || e.event_id === eventId)
+    return localEntries.filter(
+      (e) => e.event_id === eventId || (!e.event_id && eventId === 'evt-nasa-2026'),
+    )
   } catch {
     const raw = localStorage.getItem(STORAGE_KEY_ENTRIES)
     const current: EntryRow[] = raw ? JSON.parse(raw) : []
-    return current.filter((e) => !e.event_id || e.event_id === eventId)
+    return current.filter(
+      (e) => e.event_id === eventId || (!e.event_id && eventId === 'evt-nasa-2026'),
+    )
   }
 }

@@ -1,9 +1,10 @@
 import type { EntryRow } from '../App'
 import { normalizeHofstraUsername } from './hofstraEmail'
 
+export const NTFY_SERVER = 'https://ntfy.sh'
 export const NTFY_TOPIC = 'raffle_wheel_nasa_space_apps_entries_v1'
-export const NTFY_ENDPOINT = `https://ntfy.envs.net/${NTFY_TOPIC}`
-export const NTFY_EVENTS_ENDPOINT = `https://ntfy.envs.net/raffle_wheel_events_channel_v1`
+export const NTFY_ENDPOINT = `${NTFY_SERVER}/${NTFY_TOPIC}`
+export const NTFY_EVENTS_ENDPOINT = `${NTFY_SERVER}/raffle_wheel_events_channel_v1`
 
 export function getEventTopic(eventId?: string): string {
   if (!eventId || eventId === 'evt-nasa-2026') {
@@ -14,7 +15,7 @@ export function getEventTopic(eventId?: string): string {
 }
 
 export function getEventEndpoint(eventId?: string): string {
-  return `https://ntfy.envs.net/${getEventTopic(eventId)}`
+  return `${NTFY_SERVER}/${getEventTopic(eventId)}`
 }
 export const GOOGLE_SHEET_URL =
   'https://docs.google.com/spreadsheets/d/1XKZnZHX7WbtJMw4T8a822920Y__x5fiuqTsxYo3fs4I/edit?usp=sharing'
